@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F7F5EE;
+    --paper-edge:#EDEADF;
+    --stripe:#DCE8DE;
+    --stripe-alt:#F7F5EE;
+    --ink:#1C2B22;
+    --ink-soft:#4A5A4F;
+    --green:#2F4F3F;
+    --green-deep:#233C2F;
+    --red:#9C3A3F;
+    --gold:#A9863F;
+    --line:#C9CCB9;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--paper-edge);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    min-height:100vh;
+    padding:32px 16px 80px;
+  }
+  .sheet{
+    max-width:980px;
+    margin:0 auto;
+    background:var(--paper);
+    border:1px solid var(--line);
+    box-shadow:0 2px 24px rgba(28,43,34,0.10);
+  }
+  .letterhead{
+    padding:28px 36px 20px;
+    border-bottom:3px double var(--green);
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-end;
+    flex-wrap:wrap;
+    gap:12px;
+  }
+  .letterhead h1{
+    font-family:'Spectral',serif;
+    font-weight:700;
+    font-size:28px;
+    margin:0;
+    color:var(--green-deep);
+    letter-spacing:0.2px;
+  }
+  .letterhead .sub{
+    font-size:12px;
+    color:var(--ink-soft);
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    margin-top:4px;
+  }
+  .project-name-wrap{display:flex;flex-direction:column;align-items:flex-end;}
+  #projectName{
+    font-family:'Spectral',serif;
+    font-size:16px;
+    font-weight:600;
+    color:var(--green-deep);
+    background:transparent;
+    border:none;
+    border-bottom:1px dashed var(--line);
+    text-align:right;
+    padding:2px 0;
+    min-width:180px;
+  }
+  #projectName:focus{outline:none;border-bottom:1px solid var(--gold);}
+  .label-tiny{font-size:10px;color:var(--ink-soft);letter-spacing:1.2px;text-transform:uppercase;}
+
+  .summary{
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:1px;
+    background:var(--line);
+    border-bottom:1px solid var(--line);
+  }
+  .stat{background:var(--paper);padding:18px 20px;position:relative;}
+  .stat .label-tiny{margin-bottom:6px;}
+  .stat .val{font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:600;color:var(--ink);}
+  .stat.gross .val{color:var(--green-deep);}
+  .stat.net{background:var(--green-deep);}
+  .stat.net .label-tiny{color:#C9D6C9;}
+  .stat.net .val{color:#fff;font-size:24px;}
+  .stat.net .val.negative{color:#E7B4B4;}
+  .stamp{
+    position:absolute;top:14px;right:16px;
+    font-family:'Spectral',serif;font-size:10px;font-weight:700;letter-spacing:1px;
+    color:var(--gold);border:1px solid var(--gold);padding:2px 6px;
+    transform:rotate(-4deg);opacity:0.85;
+  }
+
+  .entry-form{
+    padding:22px 36px;
+    border-bottom:1px solid var(--line);
+    display:grid;
+    grid-template-columns:1.3fr 1fr 1fr 1fr auto;
+    gap:10px;
+    align-items:end;
+    background:#FBFAF5;
+  }
+  .field{display:flex;flex-direction:column;gap:5px;}
+  .field label{font-size:10px;color:var(--ink-soft);letter-spacing:1px;text-transform:uppercase;}
+  .field input, .field select{
+    font-family:'Inter',sans-serif;font-size:14px;padding:9px 10px;
+    border:1px solid var(--line);background:#fff;color:var(--ink);
+  }
+  .field input[type=number]{font-family:'IBM Plex Mono',monospace;}
+  .field input:focus, .field select:focus{outline:none;border-color:var(--green);}
+  .add-btn{
+    background:var(--green-deep);color:#fff;border:none;padding:10px 18px;
+    font-family:'Inter',sans-serif;font-weight:600;font-size:13px;cursor:pointer;height:38px;
+  }
+  .add-btn:hover{background:var(--green);}
+  .add-btn:disabled{opacity:0.5;cursor:not-allowed;}
+
+  .ledger-wrap{padding:0 36px 8px;}
+  table{width:100%;border-collapse:collapse;margin-top:18px;}
+  thead th{
+    text-align:left;font-size:10px;letter-spacing:1px;text-transform:uppercase;
+    color:var(--ink-soft);padding:8px 10px;border-bottom:2px solid var(--green);
+  }
+  thead th.num, tbody td.num{text-align:right;}
+  tbody tr{background:var(--stripe-alt);}
+  tbody tr:nth-child(even){background:var(--stripe);}
+  tbody td{padding:9px 10px;font-size:13px;border-bottom:1px solid rgba(28,43,34,0.06);vertical-align:middle;}
+  td.num{font-family:'IBM Plex Mono',monospace;font-weight:500;}
+  td.income{color:var(--green-deep);}
+  td.expense{color:var(--red);}
+  .tag{display:inline-block;font-size:10px;letter-spacing:0.5px;padding:2px 7px;border:1px solid currentColor;text-transform:uppercase;}
+  .tag.income{color:var(--green-deep);}
+  .tag.cogs{color:var(--red);}
+  .tag.opex{color:var(--gold);}
+  .del{background:none;border:none;cursor:pointer;color:var(--ink-soft);font-size:14px;padding:2px 6px;}
+  .del:hover{color:var(--red);}
+  .empty-row td{text-align:center;color:var(--ink-soft);font-style:italic;padding:30px 10px;}
+
+  .footer-note{
+    padding:16px 36px 26px;font-size:11px;color:var(--ink-soft);
+    display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;
+  }
+  .reset-link{color:var(--red);background:none;border:none;cursor:pointer;font-size:11px;text-decoration:underline;}
+  .toast{
+    position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+    background:var(--green-deep);color:#fff;padding:9px 18px;font-size:13px;
+    box-shadow:0 4px 14px rgba(0,0,0,0.2);opacity:0;pointer-events:none;
+    transition:opacity 0.25s ease;z-index:10;
+  }
+  .toast.show{opacity:1;}
+  .toast.err{background:var(--red);}
+
+  @media (max-width:760px){
+    .entry-form{grid-template-columns:1fr 1fr;}
+    .summary{grid-template-columns:1fr 1fr;}
+    .letterhead{flex-direction:column;align-items:flex-start;}
+    .project-name-wrap{align-items:flex-start;}
+    #projectName{text-align:left;}
+    table{display:block;overflow-x:auto;}
+  }
+</style>
+</head>
+<body>
+
+<div class="sheet">
+  <div class="letterhead">
+    <div>
+      <h1>Project Ledger</h1>
+      <div class="sub">Spend · Gross Profit · Net Profit</div>
+    </div>
+    <div class="project-name-wrap">
+      <span class="label-tiny">Project</span>
+      <input id="projectName" placeholder="Untitled Project" value="Untitled Project">
+    </div>
+  </div>
+
+  <div class="summary">
+    <div class="stat">
+      <div class="label-tiny">Revenue</div>
+      <div class="val" id="statRevenue">£0.00</div>
+    </div>
+    <div class="stat">
+      <div class="label-tiny">Direct Costs (COGS)</div>
+      <div class="val" id="statCogs">£0.00</div>
+    </div>
+    <div class="stat gross">
+      <div class="label-tiny">Gross Profit</div>
+      <div class="val" id="statGross">£0.00</div>
+    </div>
+    <div class="stat net">
+      <div class="stamp">bottom line</div>
+      <div class="label-tiny">Net Profit</div>
+      <div class="val" id="statNet">£0.00</div>
+    </div>
+  </div>
+
+  <div class="entry-form">
+    <div class="field">
+      <label>Description</label>
+      <input type="text" id="fDesc" placeholder="e.g. Client deposit, timber order...">
+    </div>
+    <div class="field">
+      <label>Type</label>
+      <select id="fType">
+        <option value="income">Income</option>
+        <option value="cogs">Direct cost (COGS)</option>
+        <option value="opex">Operating expense</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Amount (£)</label>
+      <input type="number" id="fAmount" placeholder="0.00" step="0.01" min="0">
+    </div>
+    <div class="field">
+      <label>Date</label>
+      <input type="date" id="fDate">
+    </div>
+    <button class="add-btn" id="addBtn">Add entry</button>
+  </div>
+
+  <div class="ledger-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Description</th>
+          <th>Category</th>
+          <th class="num">Amount</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr class="empty-row"><td colspan="5">Loading ledger…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="footer-note">
+    <span>Gross profit = Revenue − Direct costs. Net profit = Gross profit − Operating expenses. Data is stored in your "Project Ledger Data" Google Sheet.</span>
+    <button class="reset-link" id="resetBtn">Clear all entries</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ---- Your Apps Script backend URL ----
+const API_URL = "https://script.google.com/macros/s/AKfycbzfEKUNlu0pkWMT3iCmVS62VAA6CatszKhsJmxvvBl3JGlepRGH8duL0fujE4bPuaLcsQ/exec";
+
+const tbody = document.getElementById('tbody');
+const toastEl = document.getElementById('toast');
+const projectNameInput = document.getElementById('projectName');
+
+let entries = [];
+
+async function apiGet(action){
+  const res = await fetch(`${API_URL}?action=${encodeURIComponent(action)}`);
+  if(!res.ok) throw new Error('Request failed: ' + res.status);
+  const data = await res.json();
+  if(data.error) throw new Error(data.error);
+  return data;
+}
+
+async function apiPost(payload){
+  // text/plain avoids a CORS preflight that Apps Script doesn't handle
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(payload)
+  });
+  if(!res.ok) throw new Error('Request failed: ' + res.status);
+  const data = await res.json();
+  if(data.error) throw new Error(data.error);
+  return data;
+}
+
+function showToast(msg, isErr){
+  toastEl.textContent = msg;
+  toastEl.className = 'toast show' + (isErr ? ' err' : '');
+  setTimeout(()=>{ toastEl.className = 'toast'; }, 2400);
+}
+
+function fmt(n){
+  const sign = n < 0 ? '-' : '';
+  return sign + '£' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function todayStr(){
+  return new Date().toISOString().slice(0,10);
+}
+
+async function loadData(){
+  try{
+    const data = await apiGet('list');
+    entries = data.entries || [];
+    projectNameInput.value = data.projectName || 'Untitled Project';
+  }catch(e){
+    entries = [];
+    showToast('Could not reach the backend — check the API URL / deployment access', true);
+  }
+  render();
+}
+
+function computeTotals(){
+  let revenue = 0, cogs = 0, opex = 0;
+  entries.forEach(e=>{
+    if(e.type === 'income') revenue += e.amount;
+    else if(e.type === 'cogs') cogs += e.amount;
+    else if(e.type === 'opex') opex += e.amount;
+  });
+  const gross = revenue - cogs;
+  const net = gross - opex;
+  return { revenue, cogs, opex, gross, net };
+}
+
+function render(){
+  const t = computeTotals();
+  document.getElementById('statRevenue').textContent = fmt(t.revenue);
+  document.getElementById('statCogs').textContent = fmt(t.cogs);
+  document.getElementById('statGross').textContent = fmt(t.gross);
+  const netEl = document.getElementById('statNet');
+  netEl.textContent = fmt(t.net);
+  netEl.classList.toggle('negative', t.net < 0);
+
+  if(entries.length === 0){
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No entries yet — add your first one above.</td></tr>';
+    return;
+  }
+
+  const sorted = [...entries].sort((a,b)=> (b.date || '').localeCompare(a.date || ''));
+  tbody.innerHTML = sorted.map(e=>{
+    const tagClass = e.type === 'income' ? 'income' : (e.type === 'cogs' ? 'cogs' : 'opex');
+    const tagLabel = e.type === 'income' ? 'Income' : (e.type === 'cogs' ? 'COGS' : 'OpEx');
+    const amtClass = e.type === 'income' ? 'income' : 'expense';
+    const amtPrefix = e.type === 'income' ? '+' : '−';
+    return `<tr>
+      <td>${e.date || ''}</td>
+      <td>${escapeHtml(e.desc || '(no description)')}</td>
+      <td><span class="tag ${tagClass}">${tagLabel}</span></td>
+      <td class="num ${amtClass}">${amtPrefix}${fmt(Math.abs(e.amount))}</td>
+      <td><button class="del" data-id="${e.id}" title="Delete entry">✕</button></td>
+    </tr>`;
+  }).join('');
+
+  tbody.querySelectorAll('.del').forEach(btn=>{
+    btn.addEventListener('click', ()=> deleteEntry(btn.dataset.id));
+  });
+}
+
+function escapeHtml(str){
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+async function addEntry(){
+  const desc = document.getElementById('fDesc').value.trim();
+  const type = document.getElementById('fType').value;
+  const amountRaw = document.getElementById('fAmount').value;
+  const date = document.getElementById('fDate').value || todayStr();
+  const amount = parseFloat(amountRaw);
+
+  if(!amount || amount <= 0){
+    showToast('Enter an amount greater than £0', true);
+    return;
+  }
+
+  const addBtn = document.getElementById('addBtn');
+  addBtn.disabled = true;
+
+  const entryDraft = {
+    desc: desc || (type === 'income' ? 'Income' : (type === 'cogs' ? 'Direct cost' : 'Operating expense')),
+    type,
+    amount: Math.round(amount * 100) / 100,
+    date
+  };
+
+  try{
+    const result = await apiPost({ action: 'add', entry: entryDraft });
+    entries.push({ id: result.id, ...entryDraft });
+    render();
+    document.getElementById('fDesc').value = '';
+    document.getElementById('fAmount').value = '';
+    document.getElementById('fDesc').focus();
+    showToast('Entry added');
+  }catch(e){
+    showToast('Could not save that entry — try again', true);
+  }finally{
+    addBtn.disabled = false;
+  }
+}
+
+async function deleteEntry(id){
+  const prev = entries;
+  entries = entries.filter(e => e.id !== id);
+  render();
+  try{
+    await apiPost({ action: 'delete', id });
+    showToast('Entry removed');
+  }catch(e){
+    entries = prev;
+    render();
+    showToast('Could not delete — try again', true);
+  }
+}
+
+document.getElementById('addBtn').addEventListener('click', addEntry);
+document.getElementById('fAmount').addEventListener('keydown', e=>{ if(e.key === 'Enter') addEntry(); });
+document.getElementById('fDesc').addEventListener('keydown', e=>{ if(e.key === 'Enter') addEntry(); });
+
+document.getElementById('resetBtn').addEventListener('click', async ()=>{
+  if(!confirm('This will permanently delete every entry in this ledger. Continue?')) return;
+  const prev = entries;
+  entries = [];
+  render();
+  try{
+    await apiPost({ action: 'clear' });
+    showToast('Ledger cleared');
+  }catch(e){
+    entries = prev;
+    render();
+    showToast('Could not clear the ledger — try again', true);
+  }
+});
+
+projectNameInput.addEventListener('change', async ()=>{
+  const name = projectNameInput.value.trim() || 'Untitled Project';
+  try{
+    await apiPost({ action: 'setProjectName', name });
+  }catch(e){
+    showToast('Could not save project name', true);
+  }
+});
+
+document.getElementById('fDate').value = todayStr();
+
+loadData();
+</script>
+
+</body>
+</html>
