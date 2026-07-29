@@ -173,6 +173,31 @@
   .tag.opex{color:var(--gold);}
   .del{background:none;border:none;cursor:pointer;color:var(--ink-soft);font-size:14px;padding:2px 6px;}
   .del:hover{color:var(--red);}
+  .edit-btn{background:none;border:none;cursor:pointer;color:var(--ink-soft);font-size:13px;padding:2px 6px;}
+  .edit-btn:hover{color:var(--green);}
+  .row-actions{white-space:nowrap;}
+  tr.editing td{background:#FBFAF5;padding-top:6px;padding-bottom:6px;}
+  .edit-input{
+    width:100%;
+    font-family:'Inter',sans-serif;
+    font-size:13px;
+    padding:6px 7px;
+    border:1px solid var(--line);
+    background:#fff;
+    color:var(--ink);
+  }
+  .edit-input.num{font-family:'IBM Plex Mono',monospace;text-align:right;}
+  .edit-input:focus{outline:none;border-color:var(--green);}
+  .save-btn{
+    background:var(--green-deep);color:#fff;border:none;padding:6px 12px;
+    font-size:12px;font-weight:600;cursor:pointer;margin-right:4px;
+  }
+  .save-btn:hover{background:var(--green);}
+  .cancel-btn{
+    background:none;border:1px solid var(--line);color:var(--ink-soft);
+    padding:6px 10px;font-size:12px;cursor:pointer;
+  }
+  .cancel-btn:hover{border-color:var(--red);color:var(--red);}
   .empty-row td{text-align:center;color:var(--ink-soft);font-style:italic;padding:26px 10px;}
 
   .monthly-wrap{padding:6px 36px 8px;}
@@ -336,6 +361,7 @@ const monthFilter = document.getElementById('monthFilter');
 
 let entries = [];
 let selectedMonth = 'all';
+let editingId = null;
 
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
@@ -477,6 +503,13 @@ function renderMonthlyTable(){
   });
 }
 
+const TYPE_OPTIONS = [
+  { value: 'income', label: 'Income' },
+  { value: 'cogs', label: 'Direct cost (COGS)' },
+  { value: 'salaries', label: 'Salary' },
+  { value: 'opex', label: 'Operating expense' }
+];
+
 function renderEntriesTable(scoped){
   if(scoped.length === 0){
     tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No entries in this view yet.</td></tr>';
@@ -484,6 +517,19 @@ function renderEntriesTable(scoped){
   }
   const sorted = [...scoped].sort((a,b)=> (b.date || '').localeCompare(a.date || ''));
   tbody.innerHTML = sorted.map(e=>{
+    if(e.id === editingId){
+      const opts = TYPE_OPTIONS.map(o => `<option value="${o.value}" ${o.value===e.type?'selected':''}>${o.label}</option>`).join('');
+      return `<tr class="editing" data-editing-row="${e.id}">
+        <td><input class="edit-input" type="date" id="edit-date-${e.id}" value="${e.date || ''}"></td>
+        <td><input class="edit-input" type="text" id="edit-desc-${e.id}" value="${escapeAttr(e.desc || '')}"></td>
+        <td><select class="edit-input" id="edit-type-${e.id}">${opts}</select></td>
+        <td><input class="edit-input num" type="number" step="0.01" min="0" id="edit-amount-${e.id}" value="${Math.abs(e.amount)}"></td>
+        <td class="row-actions">
+          <button class="save-btn" data-save="${e.id}">Save</button>
+          <button class="cancel-btn" data-cancel="${e.id}">Cancel</button>
+        </td>
+      </tr>`;
+    }
     const tagClass = e.type;
     const tagLabel = e.type === 'income' ? 'Income' : e.type === 'cogs' ? 'COGS' : e.type === 'salaries' ? 'Salary' : 'OpEx';
     const amtClass = e.type === 'income' ? 'income' : 'expense';
@@ -493,13 +539,70 @@ function renderEntriesTable(scoped){
       <td>${escapeHtml(e.desc || '(no description)')}</td>
       <td><span class="tag ${tagClass}">${tagLabel}</span></td>
       <td class="num ${amtClass}">${amtPrefix}${fmt(Math.abs(e.amount))}</td>
-      <td><button class="del" data-id="${e.id}" title="Delete entry">✕</button></td>
+      <td class="row-actions">
+        <button class="edit-btn" data-id="${e.id}" title="Edit entry">✎</button>
+        <button class="del" data-id="${e.id}" title="Delete entry">✕</button>
+      </td>
     </tr>`;
   }).join('');
 
   tbody.querySelectorAll('.del').forEach(btn=>{
     btn.addEventListener('click', ()=> deleteEntry(btn.dataset.id));
   });
+  tbody.querySelectorAll('.edit-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      editingId = btn.dataset.id;
+      render();
+    });
+  });
+  tbody.querySelectorAll('[data-save]').forEach(btn=>{
+    btn.addEventListener('click', ()=> saveEdit(btn.dataset.save));
+  });
+  tbody.querySelectorAll('[data-cancel]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      editingId = null;
+      render();
+    });
+  });
+}
+
+function escapeAttr(str){
+  return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+}
+
+async function saveEdit(id){
+  const dateEl = document.getElementById(`edit-date-${id}`);
+  const descEl = document.getElementById(`edit-desc-${id}`);
+  const typeEl = document.getElementById(`edit-type-${id}`);
+  const amountEl = document.getElementById(`edit-amount-${id}`);
+
+  const amount = parseFloat(amountEl.value);
+  if(!amount || amount <= 0){
+    showToast('Enter an amount greater than £0', true);
+    return;
+  }
+  const date = dateEl.value || todayStr();
+  const type = typeEl.value;
+  const typeLabelMap = { income: 'Income', cogs: 'Direct cost', salaries: 'Salary', opex: 'Operating expense' };
+  const desc = descEl.value.trim() || typeLabelMap[type];
+  const updated = { date, desc, type, amount: Math.round(amount * 100) / 100 };
+
+  const idx = entries.findIndex(e => e.id === id);
+  const prevEntry = idx !== -1 ? { ...entries[idx] } : null;
+  if(idx !== -1) entries[idx] = { id, ...updated };
+  editingId = null;
+  populateMonthFilter();
+  render();
+
+  try{
+    await apiPost({ action: 'edit', id, entry: updated });
+    showToast('Entry updated');
+  }catch(e){
+    if(idx !== -1 && prevEntry) entries[idx] = prevEntry;
+    populateMonthFilter();
+    render();
+    showToast('Could not save changes — try again', true);
+  }
 }
 
 function escapeHtml(str){
@@ -553,6 +656,7 @@ async function addEntry(){
 }
 
 async function deleteEntry(id){
+  if(editingId === id) editingId = null;
   const prev = entries;
   entries = entries.filter(e => e.id !== id);
   populateMonthFilter();
