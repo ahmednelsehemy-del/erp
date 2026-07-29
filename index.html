@@ -19,6 +19,7 @@
     --red:#9C3A3F;
     --gold:#A9863F;
     --blue:#3E5C82;
+    --orange:#B5651D;
     --line:#C9CCB9;
   }
   *{box-sizing:border-box;}
@@ -169,7 +170,8 @@
   .tag{display:inline-block;font-size:10px;letter-spacing:0.5px;padding:2px 7px;border:1px solid currentColor;text-transform:uppercase;}
   .tag.income{color:var(--green-deep);}
   .tag.cogs{color:var(--red);}
-  .tag.salaries{color:var(--blue);}
+  .tag.instructor_pay{color:var(--orange);}
+  .tag.admin_salary{color:var(--blue);}
   .tag.opex{color:var(--gold);}
   .del{background:none;border:none;cursor:pointer;color:var(--ink-soft);font-size:14px;padding:2px 6px;}
   .del:hover{color:var(--red);}
@@ -256,12 +258,12 @@
       <div class="val" id="statRevenue">£0.00</div>
     </div>
     <div class="stat">
-      <div class="label-tiny">Direct Costs</div>
+      <div class="label-tiny">Direct Costs (COGS)</div>
       <div class="val" id="statCogs">£0.00</div>
     </div>
     <div class="stat">
-      <div class="label-tiny">Salaries</div>
-      <div class="val" id="statSalaries">£0.00</div>
+      <div class="label-tiny">Instructor Pay</div>
+      <div class="val" id="statInstructor">£0.00</div>
     </div>
     <div class="stat">
       <div class="label-tiny">Operating Exp.</div>
@@ -288,7 +290,8 @@
       <select id="fType">
         <option value="income">Income</option>
         <option value="cogs">Direct cost (COGS)</option>
-        <option value="salaries">Salaries</option>
+        <option value="instructor_pay">Instructor pay (COGS)</option>
+        <option value="admin_salary">Admin/other salary (OpEx)</option>
         <option value="opex">Operating expense</option>
       </select>
     </div>
@@ -311,7 +314,7 @@
           <th>Month</th>
           <th class="num">Revenue</th>
           <th class="num">Direct Costs</th>
-          <th class="num">Salaries</th>
+          <th class="num">Instructor Pay</th>
           <th class="num">OpEx</th>
           <th class="num">Gross Profit</th>
           <th class="num">Net Profit</th>
@@ -342,7 +345,7 @@
   </div>
 
   <div class="footer-note">
-    <span>Gross profit = Revenue − Direct costs. Net profit = Gross profit − Salaries − Operating expenses. Data is stored in your "Project Ledger Data" Google Sheet.</span>
+    <span>Gross profit = Revenue − Direct costs (incl. instructor pay). Net profit = Gross profit − Operating expenses (incl. admin/other salaries). Data is stored in your "Project Ledger Data" Google Sheet.</span>
     <button class="reset-link" id="resetBtn">Clear all entries</button>
   </div>
 </div>
@@ -440,16 +443,19 @@ function populateMonthFilter(){
 }
 
 function totalsFor(list){
-  let revenue = 0, cogs = 0, salaries = 0, opex = 0;
+  let revenue = 0, cogsDirect = 0, instructorPay = 0, adminSalary = 0, opexDirect = 0;
   list.forEach(e=>{
     if(e.type === 'income') revenue += e.amount;
-    else if(e.type === 'cogs') cogs += e.amount;
-    else if(e.type === 'salaries') salaries += e.amount;
-    else if(e.type === 'opex') opex += e.amount;
+    else if(e.type === 'cogs') cogsDirect += e.amount;
+    else if(e.type === 'instructor_pay') instructorPay += e.amount;
+    else if(e.type === 'admin_salary') adminSalary += e.amount;
+    else if(e.type === 'opex') opexDirect += e.amount;
   });
+  const cogs = cogsDirect + instructorPay;   // total COGS, incl. direct-delivery labor
+  const opex = opexDirect + adminSalary;     // total OpEx, incl. support/admin labor
   const gross = revenue - cogs;
-  const net = gross - salaries - opex;
-  return { revenue, cogs, salaries, opex, gross, net };
+  const net = gross - opex;
+  return { revenue, cogsDirect, instructorPay, adminSalary, opexDirect, cogs, opex, gross, net };
 }
 
 function render(){
@@ -460,7 +466,7 @@ function render(){
   const t = totalsFor(scoped);
   document.getElementById('statRevenue').textContent = fmt(t.revenue);
   document.getElementById('statCogs').textContent = fmt(t.cogs);
-  document.getElementById('statSalaries').textContent = fmt(t.salaries);
+  document.getElementById('statInstructor').textContent = fmt(t.instructorPay);
   document.getElementById('statOpex').textContent = fmt(t.opex);
   document.getElementById('statGross').textContent = fmt(t.gross);
   const netEl = document.getElementById('statNet');
@@ -487,7 +493,7 @@ function renderMonthlyTable(){
       <td class="month-label">${monthLabel(m)}</td>
       <td class="num income">${fmt(t.revenue)}</td>
       <td class="num expense">${fmt(t.cogs)}</td>
-      <td class="num expense">${fmt(t.salaries)}</td>
+      <td class="num expense">${fmt(t.instructorPay)}</td>
       <td class="num expense">${fmt(t.opex)}</td>
       <td class="num">${fmt(t.gross)}</td>
       <td class="num" style="font-weight:700;${t.net<0?'color:var(--red);':'color:var(--green-deep);'}">${fmt(t.net)}</td>
@@ -506,7 +512,8 @@ function renderMonthlyTable(){
 const TYPE_OPTIONS = [
   { value: 'income', label: 'Income' },
   { value: 'cogs', label: 'Direct cost (COGS)' },
-  { value: 'salaries', label: 'Salary' },
+  { value: 'instructor_pay', label: 'Instructor pay (COGS)' },
+  { value: 'admin_salary', label: 'Admin/other salary (OpEx)' },
   { value: 'opex', label: 'Operating expense' }
 ];
 
@@ -531,7 +538,8 @@ function renderEntriesTable(scoped){
       </tr>`;
     }
     const tagClass = e.type;
-    const tagLabel = e.type === 'income' ? 'Income' : e.type === 'cogs' ? 'COGS' : e.type === 'salaries' ? 'Salary' : 'OpEx';
+    const tagLabelMap2 = { income:'Income', cogs:'COGS', instructor_pay:'Instructor', admin_salary:'Admin Salary', opex:'OpEx' };
+    const tagLabel = tagLabelMap2[e.type] || e.type;
     const amtClass = e.type === 'income' ? 'income' : 'expense';
     const amtPrefix = e.type === 'income' ? '+' : '−';
     return `<tr>
@@ -583,7 +591,7 @@ async function saveEdit(id){
   }
   const date = dateEl.value || todayStr();
   const type = typeEl.value;
-  const typeLabelMap = { income: 'Income', cogs: 'Direct cost', salaries: 'Salary', opex: 'Operating expense' };
+  const typeLabelMap = { income: 'Income', cogs: 'Direct cost', instructor_pay: 'Instructor pay', admin_salary: 'Admin salary', opex: 'Operating expense' };
   const desc = descEl.value.trim() || typeLabelMap[type];
   const updated = { date, desc, type, amount: Math.round(amount * 100) / 100 };
 
@@ -626,7 +634,7 @@ async function addEntry(){
   const addBtn = document.getElementById('addBtn');
   addBtn.disabled = true;
 
-  const typeLabelMap = { income: 'Income', cogs: 'Direct cost', salaries: 'Salary', opex: 'Operating expense' };
+  const typeLabelMap = { income: 'Income', cogs: 'Direct cost', instructor_pay: 'Instructor pay', admin_salary: 'Admin salary', opex: 'Operating expense' };
   const entryDraft = {
     desc: desc || typeLabelMap[type],
     type,
