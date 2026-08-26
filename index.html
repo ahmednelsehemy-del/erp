@@ -1,725 +1,196 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Project Ledger</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-  :root{
-    --paper:#F7F5EE;
-    --paper-edge:#EDEADF;
-    --stripe:#DCE8DE;
-    --stripe-alt:#F7F5EE;
-    --ink:#1C2B22;
-    --ink-soft:#4A5A4F;
-    --green:#2F4F3F;
-    --green-deep:#233C2F;
-    --red:#9C3A3F;
-    --gold:#A9863F;
-    --blue:#3E5C82;
-    --orange:#B5651D;
-    --line:#C9CCB9;
-  }
-  *{box-sizing:border-box;}
-  body{
-    margin:0;
-    background:var(--paper-edge);
-    color:var(--ink);
-    font-family:'Inter',sans-serif;
-    min-height:100vh;
-    padding:32px 16px 80px;
-  }
-  .sheet{
-    max-width:1080px;
-    margin:0 auto;
-    background:var(--paper);
-    border:1px solid var(--line);
-    box-shadow:0 2px 24px rgba(28,43,34,0.10);
-  }
-  .letterhead{
-    padding:28px 36px 20px;
-    border-bottom:3px double var(--green);
-    display:flex;
-    justify-content:space-between;
-    align-items:flex-end;
-    flex-wrap:wrap;
-    gap:12px;
-  }
-  .letterhead h1{
-    font-family:'Spectral',serif;
-    font-weight:700;
-    font-size:28px;
-    margin:0;
-    color:var(--green-deep);
-    letter-spacing:0.2px;
-  }
-  .letterhead .sub{
-    font-size:12px;
-    color:var(--ink-soft);
-    letter-spacing:1.5px;
-    text-transform:uppercase;
-    margin-top:4px;
-  }
-  .project-name-wrap{display:flex;flex-direction:column;align-items:flex-end;}
-  #projectName{
-    font-family:'Spectral',serif;
-    font-size:16px;
-    font-weight:600;
-    color:var(--green-deep);
-    background:transparent;
-    border:none;
-    border-bottom:1px dashed var(--line);
-    text-align:right;
-    padding:2px 0;
-    min-width:180px;
-  }
-  #projectName:focus{outline:none;border-bottom:1px solid var(--gold);}
-  .label-tiny{font-size:10px;color:var(--ink-soft);letter-spacing:1.2px;text-transform:uppercase;}
-
-  .scope-bar{
-    padding:14px 36px;
-    background:#FBFAF5;
-    border-bottom:1px solid var(--line);
-    display:flex;
-    align-items:center;
-    gap:10px;
-    flex-wrap:wrap;
-  }
-  .scope-bar label{font-size:11px;color:var(--ink-soft);letter-spacing:0.5px;text-transform:uppercase;}
-  #monthFilter{
-    font-family:'IBM Plex Mono',monospace;
-    font-size:13px;
-    padding:7px 10px;
-    border:1px solid var(--line);
-    background:#fff;
-    color:var(--ink);
-  }
-  #monthFilter:focus{outline:none;border-color:var(--green);}
-
-  .summary{
-    display:grid;
-    grid-template-columns:repeat(6,1fr);
-    gap:1px;
-    background:var(--line);
-    border-bottom:1px solid var(--line);
-  }
-  .stat{background:var(--paper);padding:16px 16px;position:relative;}
-  .stat .label-tiny{margin-bottom:6px;}
-  .stat .val{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;color:var(--ink);}
-  .stat.gross .val{color:var(--green-deep);}
-  .stat.net{background:var(--green-deep);}
-  .stat.net .label-tiny{color:#C9D6C9;}
-  .stat.net .val{color:#fff;font-size:19px;}
-  .stat.net .val.negative{color:#E7B4B4;}
-  .stamp{
-    position:absolute;top:12px;right:12px;
-    font-family:'Spectral',serif;font-size:9px;font-weight:700;letter-spacing:1px;
-    color:var(--gold);border:1px solid var(--gold);padding:2px 5px;
-    transform:rotate(-4deg);opacity:0.85;
-  }
-
-  .entry-form{
-    padding:22px 36px;
-    border-bottom:1px solid var(--line);
-    display:grid;
-    grid-template-columns:1.3fr 1fr 1fr 1fr auto;
-    gap:10px;
-    align-items:end;
-    background:#FBFAF5;
-  }
-  .field{display:flex;flex-direction:column;gap:5px;}
-  .field label{font-size:10px;color:var(--ink-soft);letter-spacing:1px;text-transform:uppercase;}
-  .field input, .field select{
-    font-family:'Inter',sans-serif;font-size:14px;padding:9px 10px;
-    border:1px solid var(--line);background:#fff;color:var(--ink);
-  }
-  .field input[type=number]{font-family:'IBM Plex Mono',monospace;}
-  .field input:focus, .field select:focus{outline:none;border-color:var(--green);}
-  .add-btn{
-    background:var(--green-deep);color:#fff;border:none;padding:10px 18px;
-    font-family:'Inter',sans-serif;font-weight:600;font-size:13px;cursor:pointer;height:38px;
-  }
-  .add-btn:hover{background:var(--green);}
-  .add-btn:disabled{opacity:0.5;cursor:not-allowed;}
-
-  .section-title{
-    padding:20px 36px 0;
-    font-family:'Spectral',serif;
-    font-size:15px;
-    font-weight:600;
-    color:var(--green-deep);
-  }
-
-  .ledger-wrap{padding:0 36px 8px;}
-  table{width:100%;border-collapse:collapse;margin-top:14px;}
-  thead th{
-    text-align:left;font-size:10px;letter-spacing:1px;text-transform:uppercase;
-    color:var(--ink-soft);padding:8px 10px;border-bottom:2px solid var(--green);
-  }
-  thead th.num, tbody td.num{text-align:right;}
-  tbody tr{background:var(--stripe-alt);}
-  tbody tr:nth-child(even){background:var(--stripe);}
-  tbody tr.clickable{cursor:pointer;}
-  tbody tr.clickable:hover{outline:1px solid var(--gold);outline-offset:-1px;}
-  tbody td{padding:9px 10px;font-size:13px;border-bottom:1px solid rgba(28,43,34,0.06);vertical-align:middle;}
-  td.num{font-family:'IBM Plex Mono',monospace;font-weight:500;}
-  td.income{color:var(--green-deep);}
-  td.expense{color:var(--red);}
-  .tag{display:inline-block;font-size:10px;letter-spacing:0.5px;padding:2px 7px;border:1px solid currentColor;text-transform:uppercase;}
-  .tag.income{color:var(--green-deep);}
-  .tag.cogs{color:var(--red);}
-  .tag.instructor_pay{color:var(--orange);}
-  .tag.admin_salary{color:var(--blue);}
-  .tag.opex{color:var(--gold);}
-  .del{background:none;border:none;cursor:pointer;color:var(--ink-soft);font-size:14px;padding:2px 6px;}
-  .del:hover{color:var(--red);}
-  .edit-btn{background:none;border:none;cursor:pointer;color:var(--ink-soft);font-size:13px;padding:2px 6px;}
-  .edit-btn:hover{color:var(--green);}
-  .row-actions{white-space:nowrap;}
-  tr.editing td{background:#FBFAF5;padding-top:6px;padding-bottom:6px;}
-  .edit-input{
-    width:100%;
-    font-family:'Inter',sans-serif;
-    font-size:13px;
-    padding:6px 7px;
-    border:1px solid var(--line);
-    background:#fff;
-    color:var(--ink);
-  }
-  .edit-input.num{font-family:'IBM Plex Mono',monospace;text-align:right;}
-  .edit-input:focus{outline:none;border-color:var(--green);}
-  .save-btn{
-    background:var(--green-deep);color:#fff;border:none;padding:6px 12px;
-    font-size:12px;font-weight:600;cursor:pointer;margin-right:4px;
-  }
-  .save-btn:hover{background:var(--green);}
-  .cancel-btn{
-    background:none;border:1px solid var(--line);color:var(--ink-soft);
-    padding:6px 10px;font-size:12px;cursor:pointer;
-  }
-  .cancel-btn:hover{border-color:var(--red);color:var(--red);}
-  .empty-row td{text-align:center;color:var(--ink-soft);font-style:italic;padding:26px 10px;}
-
-  .monthly-wrap{padding:6px 36px 8px;}
-  .monthly-wrap table{margin-top:10px;}
-  .monthly-wrap td.month-label{font-family:'Spectral',serif;font-weight:600;color:var(--green-deep);}
-
-  .footer-note{
-    padding:16px 36px 26px;font-size:11px;color:var(--ink-soft);
-    display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;
-  }
-  .reset-link{color:var(--red);background:none;border:none;cursor:pointer;font-size:11px;text-decoration:underline;}
-  .toast{
-    position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
-    background:var(--green-deep);color:#fff;padding:9px 18px;font-size:13px;
-    box-shadow:0 4px 14px rgba(0,0,0,0.2);opacity:0;pointer-events:none;
-    transition:opacity 0.25s ease;z-index:10;
-  }
-  .toast.show{opacity:1;}
-  .toast.err{background:var(--red);}
-
-  @media (max-width:900px){
-    .summary{grid-template-columns:repeat(3,1fr);}
-  }
-  @media (max-width:760px){
-    .entry-form{grid-template-columns:1fr 1fr;}
-    .summary{grid-template-columns:1fr 1fr;}
-    .letterhead{flex-direction:column;align-items:flex-start;}
-    .project-name-wrap{align-items:flex-start;}
-    #projectName{text-align:left;}
-    table{display:block;overflow-x:auto;}
-  }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>English Land ERP Dashboard</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #2c3e50;
+            margin: 0;
+        }
+        .dashboard-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .card {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            text-align: center;
+            border-top: 4px solid #3498db;
+        }
+        .card h3 {
+            margin-top: 0;
+            color: #7f8c8d;
+            font-size: 1.1em;
+            text-transform: uppercase;
+        }
+        .card .value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .card.profit-net { border-top-color: #27ae60; }
+        .card.profit-net .value { color: #27ae60; }
+        .card.expense { border-top-color: #e74c3c; }
+        .card.expense .value { color: #e74c3c; }
+        
+        .breakdown-section {
+            max-width: 1200px;
+            margin: 40px auto 0;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        .breakdown-section h2 {
+            color: #2c3e50;
+            border-bottom: 2px solid #ecf0f1;
+            padding-bottom: 10px;
+        }
+        .breakdown-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .loading {
+            text-align: center;
+            font-size: 1.2em;
+            color: #7f8c8d;
+            margin-top: 50px;
+        }
+    </style>
 </head>
 <body>
 
-<div class="sheet">
-  <div class="letterhead">
-    <div>
-      <h1>Project Ledger</h1>
-      <div class="sub">Spend · Gross Profit · Net Profit</div>
+    <div class="header">
+        <h1>English Land ERP Financials</h1>
+        <p>Real-time data from Google Sheets</p>
     </div>
-    <div class="project-name-wrap">
-      <span class="label-tiny">Project</span>
-      <input id="projectName" placeholder="Untitled Project" value="Untitled Project">
+
+    <div id="loading" class="loading">Fetching financial data...</div>
+
+    <div id="dashboard" style="display: none;">
+        <div class="dashboard-container">
+            <div class="card">
+                <h3>Total Revenue</h3>
+                <div class="value" id="val-revenue">0 EGP</div>
+            </div>
+            
+            <div class="card expense">
+                <h3>COGS (Direct Costs)</h3>
+                <div class="value" id="val-cogs">0 EGP</div>
+            </div>
+
+            <div class="card expense">
+                <h3>OPEX (Operations)</h3>
+                <div class="value" id="val-opex">0 EGP</div>
+            </div>
+
+            <div class="card">
+                <h3>Gross Profit</h3>
+                <div class="value" id="val-gross">0 EGP</div>
+            </div>
+
+            <div class="card profit-net">
+                <h3>Net Profit</h3>
+                <div class="value" id="val-net">0 EGP</div>
+            </div>
+        </div>
+
+        <div class="breakdown-section">
+            <h2>Revenue Breakdown</h2>
+            <div class="breakdown-grid">
+                <div class="stat-item">
+                    <span>Online Modality:</span>
+                    <strong id="val-online">0 EGP</strong>
+                </div>
+                <div class="stat-item">
+                    <span>On-site Modality:</span>
+                    <strong id="val-onsite">0 EGP</strong>
+                </div>
+                <div class="stat-item">
+                    <span>Group Classes:</span>
+                    <strong id="val-group">0 EGP</strong>
+                </div>
+                <div class="stat-item">
+                    <span>Private Classes:</span>
+                    <strong id="val-private">0 EGP</strong>
+                </div>
+            </div>
+        </div>
     </div>
-  </div>
 
-  <div class="scope-bar">
-    <label for="monthFilter">Viewing</label>
-    <select id="monthFilter"><option value="all">All time</option></select>
-  </div>
+    <script>
+        // Your Google Apps Script API URL
+        const API_URL = "https://script.google.com/macros/s/AKfycbzFfp3tp64salh_hFPn1sw55y_XHSIazjzqQY7PzShvV05x8Dc_vY54KlMnUZZVCh95/exec";
 
-  <div class="summary">
-    <div class="stat">
-      <div class="label-tiny">Revenue</div>
-      <div class="val" id="statRevenue">£0.00</div>
-    </div>
-    <div class="stat">
-      <div class="label-tiny">Direct Costs (COGS)</div>
-      <div class="val" id="statCogs">£0.00</div>
-    </div>
-    <div class="stat">
-      <div class="label-tiny">Instructor Pay</div>
-      <div class="val" id="statInstructor">£0.00</div>
-    </div>
-    <div class="stat">
-      <div class="label-tiny">Operating Exp.</div>
-      <div class="val" id="statOpex">£0.00</div>
-    </div>
-    <div class="stat gross">
-      <div class="label-tiny">Gross Profit</div>
-      <div class="val" id="statGross">£0.00</div>
-    </div>
-    <div class="stat net">
-      <div class="stamp">bottom line</div>
-      <div class="label-tiny">Net Profit</div>
-      <div class="val" id="statNet">£0.00</div>
-    </div>
-  </div>
+        // Function to format numbers as currency
+        function formatCurrency(num) {
+            return new Intl.NumberFormat('en-EG', { style: 'currency', currency: 'EGP' }).format(num);
+        }
 
-  <div class="entry-form">
-    <div class="field">
-      <label>Description</label>
-      <input type="text" id="fDesc" placeholder="e.g. Client deposit, timber order...">
-    </div>
-    <div class="field">
-      <label>Category</label>
-      <select id="fType">
-        <option value="income">Income</option>
-        <option value="cogs">Direct cost (COGS)</option>
-        <option value="instructor_pay">Instructor pay (COGS)</option>
-        <option value="admin_salary">Admin/other salary (OpEx)</option>
-        <option value="opex">Operating expense</option>
-      </select>
-    </div>
-    <div class="field">
-      <label>Amount (£)</label>
-      <input type="number" id="fAmount" placeholder="0.00" step="0.01" min="0">
-    </div>
-    <div class="field">
-      <label>Date</label>
-      <input type="date" id="fDate">
-    </div>
-    <button class="add-btn" id="addBtn">Add entry</button>
-  </div>
+        // Fetch data from the API
+        async function fetchFinancials() {
+            try {
+                const response = await fetch(API_URL);
+                const data = await response.json();
 
-  <div class="monthly-wrap">
-    <div class="section-title" style="padding:0 0 4px;">Monthly breakdown</div>
-    <table>
-      <thead>
-        <tr>
-          <th>Month</th>
-          <th class="num">Revenue</th>
-          <th class="num">Direct Costs</th>
-          <th class="num">Instructor Pay</th>
-          <th class="num">OpEx</th>
-          <th class="num">Gross Profit</th>
-          <th class="num">Net Profit</th>
-        </tr>
-      </thead>
-      <tbody id="monthlyBody">
-        <tr class="empty-row"><td colspan="7">No data yet.</td></tr>
-      </tbody>
-    </table>
-  </div>
+                if(data.status === 'success') {
+                    const fin = data.financials;
+                    const brk = fin.revenue_breakdown;
 
-  <div class="section-title">Entries</div>
-  <div class="ledger-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th>Description</th>
-          <th>Category</th>
-          <th class="num">Amount</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody id="tbody">
-        <tr class="empty-row"><td colspan="5">Loading ledger…</td></tr>
-      </tbody>
-    </table>
-  </div>
+                    // Update UI elements
+                    document.getElementById('val-revenue').innerText = formatCurrency(fin.total_revenue);
+                    document.getElementById('val-cogs').innerText = formatCurrency(fin.total_cogs);
+                    document.getElementById('val-opex').innerText = formatCurrency(fin.total_opex);
+                    document.getElementById('val-gross').innerText = formatCurrency(fin.gross_profit);
+                    document.getElementById('val-net').innerText = formatCurrency(fin.net_profit);
 
-  <div class="footer-note">
-    <span>Gross profit = Revenue − Direct costs (incl. instructor pay). Net profit = Gross profit − Operating expenses (incl. admin/other salaries). Data is stored in your "Project Ledger Data" Google Sheet.</span>
-    <button class="reset-link" id="resetBtn">Clear all entries</button>
-  </div>
-</div>
+                    document.getElementById('val-online').innerText = formatCurrency(brk.online);
+                    document.getElementById('val-onsite').innerText = formatCurrency(brk.onsite);
+                    document.getElementById('val-group').innerText = formatCurrency(brk.group);
+                    document.getElementById('val-private').innerText = formatCurrency(brk.private);
 
-<div class="toast" id="toast"></div>
+                    // Hide loading, show dashboard
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('dashboard').style.display = 'block';
+                }
+            } catch (error) {
+                console.error("Error fetching data:", error);
+                document.getElementById('loading').innerText = "Failed to load data. Check console for details.";
+                document.getElementById('loading').style.color = "red";
+            }
+        }
 
-<script>
-// ---- Your Apps Script backend URL ----
-const API_URL = "https://script.google.com/macros/s/AKfycbzQoZOLUnsg76JOz259AC3BhZyzier86hXv5rTVWK1q-g9OJOPbQSSmcrW5u7oU4V4j/exec";
-
-const tbody = document.getElementById('tbody');
-const monthlyBody = document.getElementById('monthlyBody');
-const toastEl = document.getElementById('toast');
-const projectNameInput = document.getElementById('projectName');
-const monthFilter = document.getElementById('monthFilter');
-
-let entries = [];
-let selectedMonth = 'all';
-let editingId = null;
-
-const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-
-function monthKey(dateStr){
-  return (dateStr || '').slice(0,7); // YYYY-MM
-}
-function monthLabel(key){
-  if(key === 'all') return 'All time';
-  const [y,m] = key.split('-');
-  return `${MONTH_NAMES[parseInt(m,10)-1]} ${y}`;
-}
-
-async function apiGet(action){
-  const res = await fetch(`${API_URL}?action=${encodeURIComponent(action)}`);
-  if(!res.ok) throw new Error('Request failed: ' + res.status);
-  const data = await res.json();
-  if(data.error) throw new Error(data.error);
-  return data;
-}
-
-async function apiPost(payload){
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(payload)
-  });
-  if(!res.ok) throw new Error('Request failed: ' + res.status);
-  const data = await res.json();
-  if(data.error) throw new Error(data.error);
-  return data;
-}
-
-function showToast(msg, isErr){
-  toastEl.textContent = msg;
-  toastEl.className = 'toast show' + (isErr ? ' err' : '');
-  setTimeout(()=>{ toastEl.className = 'toast'; }, 2400);
-}
-
-function fmt(n){
-  const sign = n < 0 ? '-' : '';
-  return sign + '£' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-}
-
-function todayStr(){
-  return new Date().toISOString().slice(0,10);
-}
-
-async function loadData(){
-  try{
-    const data = await apiGet('list');
-    entries = data.entries || [];
-    projectNameInput.value = data.projectName || 'Untitled Project';
-  }catch(e){
-    entries = [];
-    showToast('Could not reach the backend — check the API URL / deployment access', true);
-  }
-  populateMonthFilter();
-  render();
-}
-
-function populateMonthFilter(){
-  const months = Array.from(new Set(entries.map(e => monthKey(e.date)).filter(Boolean)));
-  months.sort().reverse();
-  const current = selectedMonth;
-  monthFilter.innerHTML = '<option value="all">All time</option>' +
-    months.map(m => `<option value="${m}">${monthLabel(m)}</option>`).join('');
-  if(months.includes(current)){
-    monthFilter.value = current;
-  } else if(months.includes(monthKey(todayStr()))){
-    selectedMonth = monthKey(todayStr());
-    monthFilter.value = selectedMonth;
-  } else {
-    selectedMonth = 'all';
-    monthFilter.value = 'all';
-  }
-}
-
-function totalsFor(list){
-  let revenue = 0, cogsDirect = 0, instructorPay = 0, adminSalary = 0, opexDirect = 0;
-  list.forEach(e=>{
-    if(e.type === 'income') revenue += e.amount;
-    else if(e.type === 'cogs') cogsDirect += e.amount;
-    else if(e.type === 'instructor_pay') instructorPay += e.amount;
-    else if(e.type === 'admin_salary') adminSalary += e.amount;
-    else if(e.type === 'opex') opexDirect += e.amount;
-  });
-  const cogs = cogsDirect + instructorPay;   // total COGS, incl. direct-delivery labor
-  const opex = opexDirect + adminSalary;     // total OpEx, incl. support/admin labor
-  const gross = revenue - cogs;
-  const net = gross - opex;
-  return { revenue, cogsDirect, instructorPay, adminSalary, opexDirect, cogs, opex, gross, net };
-}
-
-function render(){
-  const scoped = selectedMonth === 'all'
-    ? entries
-    : entries.filter(e => monthKey(e.date) === selectedMonth);
-
-  const t = totalsFor(scoped);
-  document.getElementById('statRevenue').textContent = fmt(t.revenue);
-  document.getElementById('statCogs').textContent = fmt(t.cogs);
-  document.getElementById('statInstructor').textContent = fmt(t.instructorPay);
-  document.getElementById('statOpex').textContent = fmt(t.opex);
-  document.getElementById('statGross').textContent = fmt(t.gross);
-  const netEl = document.getElementById('statNet');
-  netEl.textContent = fmt(t.net);
-  netEl.classList.toggle('negative', t.net < 0);
-
-  renderMonthlyTable();
-  renderEntriesTable(scoped);
-}
-
-function renderMonthlyTable(){
-  const months = Array.from(new Set(entries.map(e => monthKey(e.date)).filter(Boolean)));
-  months.sort().reverse();
-
-  if(months.length === 0){
-    monthlyBody.innerHTML = '<tr class="empty-row"><td colspan="7">No data yet.</td></tr>';
-    return;
-  }
-
-  monthlyBody.innerHTML = months.map(m=>{
-    const list = entries.filter(e => monthKey(e.date) === m);
-    const t = totalsFor(list);
-    return `<tr class="clickable" data-month="${m}">
-      <td class="month-label">${monthLabel(m)}</td>
-      <td class="num income">${fmt(t.revenue)}</td>
-      <td class="num expense">${fmt(t.cogs)}</td>
-      <td class="num expense">${fmt(t.instructorPay)}</td>
-      <td class="num expense">${fmt(t.opex)}</td>
-      <td class="num">${fmt(t.gross)}</td>
-      <td class="num" style="font-weight:700;${t.net<0?'color:var(--red);':'color:var(--green-deep);'}">${fmt(t.net)}</td>
-    </tr>`;
-  }).join('');
-
-  monthlyBody.querySelectorAll('tr[data-month]').forEach(row=>{
-    row.addEventListener('click', ()=>{
-      selectedMonth = row.dataset.month;
-      monthFilter.value = selectedMonth;
-      render();
-    });
-  });
-}
-
-const TYPE_OPTIONS = [
-  { value: 'income', label: 'Income' },
-  { value: 'cogs', label: 'Direct cost (COGS)' },
-  { value: 'instructor_pay', label: 'Instructor pay (COGS)' },
-  { value: 'admin_salary', label: 'Admin/other salary (OpEx)' },
-  { value: 'opex', label: 'Operating expense' }
-];
-
-function renderEntriesTable(scoped){
-  if(scoped.length === 0){
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No entries in this view yet.</td></tr>';
-    return;
-  }
-  const sorted = [...scoped].sort((a,b)=> (b.date || '').localeCompare(a.date || ''));
-  tbody.innerHTML = sorted.map(e=>{
-    if(e.id === editingId){
-      const opts = TYPE_OPTIONS.map(o => `<option value="${o.value}" ${o.value===e.type?'selected':''}>${o.label}</option>`).join('');
-      return `<tr class="editing" data-editing-row="${e.id}">
-        <td><input class="edit-input" type="date" id="edit-date-${e.id}" value="${e.date || ''}"></td>
-        <td><input class="edit-input" type="text" id="edit-desc-${e.id}" value="${escapeAttr(e.desc || '')}"></td>
-        <td><select class="edit-input" id="edit-type-${e.id}">${opts}</select></td>
-        <td><input class="edit-input num" type="number" step="0.01" min="0" id="edit-amount-${e.id}" value="${Math.abs(e.amount)}"></td>
-        <td class="row-actions">
-          <button class="save-btn" data-save="${e.id}">Save</button>
-          <button class="cancel-btn" data-cancel="${e.id}">Cancel</button>
-        </td>
-      </tr>`;
-    }
-    const tagClass = e.type;
-    const tagLabelMap2 = { income:'Income', cogs:'COGS', instructor_pay:'Instructor', admin_salary:'Admin Salary', opex:'OpEx' };
-    const tagLabel = tagLabelMap2[e.type] || e.type;
-    const amtClass = e.type === 'income' ? 'income' : 'expense';
-    const amtPrefix = e.type === 'income' ? '+' : '−';
-    return `<tr>
-      <td>${e.date || ''}</td>
-      <td>${escapeHtml(e.desc || '(no description)')}</td>
-      <td><span class="tag ${tagClass}">${tagLabel}</span></td>
-      <td class="num ${amtClass}">${amtPrefix}${fmt(Math.abs(e.amount))}</td>
-      <td class="row-actions">
-        <button class="edit-btn" data-id="${e.id}" title="Edit entry">✎</button>
-        <button class="del" data-id="${e.id}" title="Delete entry">✕</button>
-      </td>
-    </tr>`;
-  }).join('');
-
-  tbody.querySelectorAll('.del').forEach(btn=>{
-    btn.addEventListener('click', ()=> deleteEntry(btn.dataset.id));
-  });
-  tbody.querySelectorAll('.edit-btn').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      editingId = btn.dataset.id;
-      render();
-    });
-  });
-  tbody.querySelectorAll('[data-save]').forEach(btn=>{
-    btn.addEventListener('click', ()=> saveEdit(btn.dataset.save));
-  });
-  tbody.querySelectorAll('[data-cancel]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      editingId = null;
-      render();
-    });
-  });
-}
-
-function escapeAttr(str){
-  return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-}
-
-async function saveEdit(id){
-  const dateEl = document.getElementById(`edit-date-${id}`);
-  const descEl = document.getElementById(`edit-desc-${id}`);
-  const typeEl = document.getElementById(`edit-type-${id}`);
-  const amountEl = document.getElementById(`edit-amount-${id}`);
-
-  const amount = parseFloat(amountEl.value);
-  if(!amount || amount <= 0){
-    showToast('Enter an amount greater than £0', true);
-    return;
-  }
-  const date = dateEl.value || todayStr();
-  const type = typeEl.value;
-  const typeLabelMap = { income: 'Income', cogs: 'Direct cost', instructor_pay: 'Instructor pay', admin_salary: 'Admin salary', opex: 'Operating expense' };
-  const desc = descEl.value.trim() || typeLabelMap[type];
-  const updated = { date, desc, type, amount: Math.round(amount * 100) / 100 };
-
-  const idx = entries.findIndex(e => e.id === id);
-  const prevEntry = idx !== -1 ? { ...entries[idx] } : null;
-  if(idx !== -1) entries[idx] = { id, ...updated };
-  editingId = null;
-  populateMonthFilter();
-  render();
-
-  try{
-    await apiPost({ action: 'edit', id, entry: updated });
-    showToast('Entry updated');
-  }catch(e){
-    if(idx !== -1 && prevEntry) entries[idx] = prevEntry;
-    populateMonthFilter();
-    render();
-    showToast('Could not save changes — try again', true);
-  }
-}
-
-function escapeHtml(str){
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
-
-async function addEntry(){
-  const desc = document.getElementById('fDesc').value.trim();
-  const type = document.getElementById('fType').value;
-  const amountRaw = document.getElementById('fAmount').value;
-  const date = document.getElementById('fDate').value || todayStr();
-  const amount = parseFloat(amountRaw);
-
-  if(!amount || amount <= 0){
-    showToast('Enter an amount greater than £0', true);
-    return;
-  }
-
-  const addBtn = document.getElementById('addBtn');
-  addBtn.disabled = true;
-
-  const typeLabelMap = { income: 'Income', cogs: 'Direct cost', instructor_pay: 'Instructor pay', admin_salary: 'Admin salary', opex: 'Operating expense' };
-  const entryDraft = {
-    desc: desc || typeLabelMap[type],
-    type,
-    amount: Math.round(amount * 100) / 100,
-    date
-  };
-
-  try{
-    const result = await apiPost({ action: 'add', entry: entryDraft });
-    entries.push({ id: result.id, ...entryDraft });
-    populateMonthFilter();
-    // keep viewing the month the new entry belongs to, if it matches current filter scope
-    if(selectedMonth !== 'all' && monthKey(date) !== selectedMonth){
-      selectedMonth = monthKey(date);
-      monthFilter.value = selectedMonth;
-    }
-    render();
-    document.getElementById('fDesc').value = '';
-    document.getElementById('fAmount').value = '';
-    document.getElementById('fDesc').focus();
-    showToast('Entry added');
-  }catch(e){
-    showToast('Could not save that entry — try again', true);
-  }finally{
-    addBtn.disabled = false;
-  }
-}
-
-async function deleteEntry(id){
-  if(editingId === id) editingId = null;
-  const prev = entries;
-  entries = entries.filter(e => e.id !== id);
-  populateMonthFilter();
-  render();
-  try{
-    await apiPost({ action: 'delete', id });
-    showToast('Entry removed');
-  }catch(e){
-    entries = prev;
-    populateMonthFilter();
-    render();
-    showToast('Could not delete — try again', true);
-  }
-}
-
-document.getElementById('addBtn').addEventListener('click', addEntry);
-document.getElementById('fAmount').addEventListener('keydown', e=>{ if(e.key === 'Enter') addEntry(); });
-document.getElementById('fDesc').addEventListener('keydown', e=>{ if(e.key === 'Enter') addEntry(); });
-
-monthFilter.addEventListener('change', ()=>{
-  selectedMonth = monthFilter.value;
-  render();
-});
-
-document.getElementById('resetBtn').addEventListener('click', async ()=>{
-  if(!confirm('This will permanently delete every entry in this ledger. Continue?')) return;
-  const prev = entries;
-  entries = [];
-  selectedMonth = 'all';
-  populateMonthFilter();
-  render();
-  try{
-    await apiPost({ action: 'clear' });
-    showToast('Ledger cleared');
-  }catch(e){
-    entries = prev;
-    populateMonthFilter();
-    render();
-    showToast('Could not clear the ledger — try again', true);
-  }
-});
-
-projectNameInput.addEventListener('change', async ()=>{
-  const name = projectNameInput.value.trim() || 'Untitled Project';
-  try{
-    await apiPost({ action: 'setProjectName', name });
-  }catch(e){
-    showToast('Could not save project name', true);
-  }
-});
-
-document.getElementById('fDate').value = todayStr();
-
-loadData();
-</script>
-
+        // Run fetch on load
+        window.onload = fetchFinancials;
+    </script>
 </body>
 </html>
+
+
