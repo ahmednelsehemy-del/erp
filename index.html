@@ -1,194 +1,171 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>English Land ERP Dashboard</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f8f9fa;
-            color: #333;
-            margin: 0;
-            padding: 20px;
-        }
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        .header h1 {
-            color: #2c3e50;
-            margin: 0;
-        }
-        .dashboard-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        .card {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-            text-align: center;
-            border-top: 4px solid #3498db;
-        }
-        .card h3 {
-            margin-top: 0;
-            color: #7f8c8d;
-            font-size: 1.1em;
-            text-transform: uppercase;
-        }
-        .card .value {
-            font-size: 2em;
-            font-weight: bold;
-            color: #2c3e50;
-        }
-        .card.profit-net { border-top-color: #27ae60; }
-        .card.profit-net .value { color: #27ae60; }
-        .card.expense { border-top-color: #e74c3c; }
-        .card.expense .value { color: #e74c3c; }
-        
-        .breakdown-section {
-            max-width: 1200px;
-            margin: 40px auto 0;
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        }
-        .breakdown-section h2 {
-            color: #2c3e50;
-            border-bottom: 2px solid #ecf0f1;
-            padding-bottom: 10px;
-        }
-        .breakdown-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-top: 20px;
-        }
-        .stat-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px;
-            background: #f8f9fa;
-            border-radius: 4px;
-        }
-        .loading {
-            text-align: center;
-            font-size: 1.2em;
-            color: #7f8c8d;
-            margin-top: 50px;
-        }
-    </style>
-</head>
-<body>
-
-    <div class="header">
-        <h1>English Land ERP Financials</h1>
-        <p>Real-time data from Google Sheets</p>
-    </div>
-
-    <div id="loading" class="loading">Fetching financial data...</div>
-
-    <div id="dashboard" style="display: none;">
-        <div class="dashboard-container">
-            <div class="card">
-                <h3>Total Revenue</h3>
-                <div class="value" id="val-revenue">0 EGP</div>
-            </div>
-            
-            <div class="card expense">
-                <h3>COGS (Direct Costs)</h3>
-                <div class="value" id="val-cogs">0 EGP</div>
-            </div>
-
-            <div class="card expense">
-                <h3>OPEX (Operations)</h3>
-                <div class="value" id="val-opex">0 EGP</div>
-            </div>
-
-            <div class="card">
-                <h3>Gross Profit</h3>
-                <div class="value" id="val-gross">0 EGP</div>
-            </div>
-
-            <div class="card profit-net">
-                <h3>Net Profit</h3>
-                <div class="value" id="val-net">0 EGP</div>
-            </div>
-        </div>
-
-        <div class="breakdown-section">
-            <h2>Revenue Breakdown</h2>
-            <div class="breakdown-grid">
-                <div class="stat-item">
-                    <span>Online Modality:</span>
-                    <strong id="val-online">0 EGP</strong>
-                </div>
-                <div class="stat-item">
-                    <span>On-site Modality:</span>
-                    <strong id="val-onsite">0 EGP</strong>
-                </div>
-                <div class="stat-item">
-                    <span>Group Classes:</span>
-                    <strong id="val-group">0 EGP</strong>
-                </div>
-                <div class="stat-item">
-                    <span>Private Classes:</span>
-                    <strong id="val-private">0 EGP</strong>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        // Your Google Apps Script API URL
-        const API_URL = "https://script.google.com/macros/s/AKfycbzFfp3tp64salh_hFPn1sw55y_XHSIazjzqQY7PzShvV05x8Dc_vY54KlMnUZZVCh95/exec";
-
-        // Function to format numbers as currency
-        function formatCurrency(num) {
-            return new Intl.NumberFormat('en-EG', { style: 'currency', currency: 'EGP' }).format(num);
-        }
-
-        // Fetch data from the API
-        async function fetchFinancials() {
-            try {
-                const response = await fetch(API_URL);
-                const data = await response.json();
-
-                if(data.status === 'success') {
-                    const fin = data.financials;
-                    const brk = fin.revenue_breakdown;
-
-                    // Update UI elements
-                    document.getElementById('val-revenue').innerText = formatCurrency(fin.total_revenue);
-                    document.getElementById('val-cogs').innerText = formatCurrency(fin.total_cogs);
-                    document.getElementById('val-opex').innerText = formatCurrency(fin.total_opex);
-                    document.getElementById('val-gross').innerText = formatCurrency(fin.gross_profit);
-                    document.getElementById('val-net').innerText = formatCurrency(fin.net_profit);
-
-                    document.getElementById('val-online').innerText = formatCurrency(brk.online);
-                    document.getElementById('val-onsite').innerText = formatCurrency(brk.onsite);
-                    document.getElementById('val-group').innerText = formatCurrency(brk.group);
-                    document.getElementById('val-private').innerText = formatCurrency(brk.private);
-
-                    // Hide loading, show dashboard
-                    document.getElementById('loading').style.display = 'none';
-                    document.getElementById('dashboard').style.display = 'block';
-                }
-            } catch (error) {
-                console.error("Error fetching data:", error);
-                document.getElementById('loading').innerText = "Failed to load data. Check console for details.";
-                document.getElementById('loading').style.color = "red";
-            }
-        }
-
-        // Run fetch on load
-        window.onload = fetchFinancials;
-    </script>
-</body>
+<!DOCTYPE html>  
+<html lang="en">  
+<head>  
+    <meta charset="UTF-8">  
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">  
+    <title>English Land ERP Dashboard V2</title>  
+    <style>  
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8f9fa; color: #333; margin: 0; padding: 20px; }  
+        .header { text-align: center; margin-bottom: 30px; }  
+        .header h1 { color: #2c3e50; margin: 0; }  
+          
+        .dashboard-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; }  
+          
+        /* Clickable Cards */  
+        .card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center; border-top: 4px solid #3498db; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; position: relative; }  
+        .card:hover { transform: translateY(-5px); box-shadow: 0 8px 15px rgba(0,0,0,0.1); }  
+        .card::after { content: 'Click for details \25B6'; position: absolute; bottom: 10px; left: 0; right: 0; font-size: 0.8em; color: #aaa; opacity: 0; transition: opacity 0.2s; }  
+        .card:hover::after { opacity: 1; }  
+          
+        .card h3 { margin-top: 0; color: #7f8c8d; font-size: 1.1em; text-transform: uppercase; }  
+        .card .value { font-size: 2em; font-weight: bold; color: #2c3e50; margin-bottom: 15px; }  
+        .card.profit-net { border-top-color: #27ae60; }  
+        .card.profit-net .value { color: #27ae60; }  
+        .card.expense { border-top-color: #e74c3c; }  
+        .card.expense .value { color: #e74c3c; }  
+          
+        .loading { text-align: center; font-size: 1.2em; color: #7f8c8d; margin-top: 50px; }  
+          
+        /* Modal Styles */  
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 1000; justify-content: center; align-items: center; backdrop-filter: blur(3px); }  
+        .modal-content { background: #fff; padding: 25px; border-radius: 12px; width: 90%; max-width: 500px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); animation: fadeIn 0.3s ease; }  
+        @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }  
+        .close-btn { float: right; cursor: pointer; font-size: 1.8em; font-weight: bold; color: #aaa; line-height: 1; margin-top: -10px; }  
+        .close-btn:hover { color: #e74c3c; }  
+        .modal h2 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #ecf0f1; padding-bottom: 10px; }  
+        .modal-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #f1f2f6; font-size: 1.1em; }  
+        .modal-row:last-child { border-bottom: none; }  
+        .section-title { margin-top: 15px; color: #7f8c8d; font-size: 0.9em; text-transform: uppercase; letter-spacing: 1px; font-weight: bold; }  
+    </style>  
+</head>  
+<body>  
+  
+    <div class="header">  
+        <h1>English Land ERP Financials</h1>  
+        <p>Real-time data. Click any card to view detailed breakdowns.</p>  
+    </div>  
+  
+    <div id="loading" class="loading">Fetching financial data...</div>  
+  
+    <div id="dashboard" style="display: none;">  
+        <div class="dashboard-container">  
+            <div class="card" onclick="openModal('revenue')">  
+                <h3>Total Revenue</h3>  
+                <div class="value" id="val-revenue">0 EGP</div>  
+            </div>  
+              
+            <div class="card expense" onclick="openModal('cogs')">  
+                <h3>COGS (Direct Costs)</h3>  
+                <div class="value" id="val-cogs">0 EGP</div>  
+            </div>  
+  
+            <div class="card expense" onclick="openModal('opex')">  
+                <h3>OPEX (Operations)</h3>  
+                <div class="value" id="val-opex">0 EGP</div>  
+            </div>  
+  
+            <div class="card profit-net" onclick="openModal('net')">  
+                <h3>Net Profit</h3>  
+                <div class="value" id="val-net">0 EGP</div>  
+            </div>  
+        </div>  
+    </div>  
+  
+    <!-- The Modal -->  
+    <div id="dataModal" class="modal" onclick="closeOutside(event)">  
+        <div class="modal-content">  
+            <span class="close-btn" onclick="closeModal()">×</span>  
+            <h2 id="modalTitle">Details</h2>  
+            <div id="modalBody"></div>  
+        </div>  
+    </div>  
+  
+    <script>  
+        const API_URL = "https://script.google.com/macros/s/AKfycbzFfp3tp64salh_hFPn1sw55y_XHSIazjzqQY7PzShvV05x8Dc_vY54KlMnUZZVCh95/exec";  
+          
+        let globalData = {}; // Stores fetched data for modal use  
+  
+        function formatCurrency(num) {  
+            return new Intl.NumberFormat('en-EG', { style: 'currency', currency: 'EGP' }).format(num);  
+        }  
+  
+        async function fetchFinancials() {  
+            try {  
+                const response = await fetch(API_URL);  
+                const result = await response.json();  
+  
+                if(result.status === 'success') {  
+                    globalData = result.data; // Save to global variable  
+  
+                    // Update Main Dashboard Cards  
+                    document.getElementById('val-revenue').innerText = formatCurrency(globalData.revenue.total);  
+                    document.getElementById('val-cogs').innerText = formatCurrency(globalData.expense.cogs);  
+                    document.getElementById('val-opex').innerText = formatCurrency(globalData.expense.opex);  
+                    document.getElementById('val-net').innerText = formatCurrency(globalData.net.total);  
+  
+                    document.getElementById('loading').style.display = 'none';  
+                    document.getElementById('dashboard').style.display = 'block';  
+                }  
+            } catch (error) {  
+                console.error("Error:", error);  
+                document.getElementById('loading').innerText = "Failed to load data.";  
+            }  
+        }  
+  
+        // Modal Logic  
+        function openModal(type) {  
+            const modal = document.getElementById('dataModal');  
+            const title = document.getElementById('modalTitle');  
+            const body = document.getElementById('modalBody');  
+            let html = "";  
+  
+            if (type === 'revenue') {  
+                title.innerText = "Revenue Breakdown";  
+                html = `  
+                    <div class="section-title">By Modality & Type</div>  
+                    <div class="modal-row"><span>Online:</span> <strong>${formatCurrency(globalData.revenue.online)}</strong></div>  
+                    <div class="modal-row"><span>On-site:</span> <strong>${formatCurrency(globalData.revenue.onsite)}</strong></div>  
+                    <div class="modal-row"><span>Group Classes:</span> <strong>${formatCurrency(globalData.revenue.group)}</strong></div>  
+                    <div class="modal-row"><span>Private Classes:</span> <strong>${formatCurrency(globalData.revenue.private)}</strong></div>  
+                      
+                    <div class="section-title">By Payment Method</div>  
+                    <div class="modal-row"><span>Vodafone Cash:</span> <strong>${formatCurrency(globalData.revenue.vfcash)}</strong></div>  
+                    <div class="modal-row"><span>Instapay:</span> <strong>${formatCurrency(globalData.revenue.instapay)}</strong></div>  
+                    <div class="modal-row"><span>Cash in Branch:</span> <strong>${formatCurrency(globalData.revenue.cash)}</strong></div>  
+                `;  
+            } else if (type === 'net') {  
+                title.innerText = "Net Profit (Cash Flow)";  
+                html = `  
+                    <p style="color: #7f8c8d; font-size: 0.9em; margin-top: 0;">Current available balance in each wallet/drawer after deducting expenses paid from that specific method.</p>  
+                    <div class="modal-row"><span>Vodafone Cash Wallet:</span> <strong style="color: ${globalData.net.vfcash >= 0 ? '#27ae60' : '#e74c3c'}">${formatCurrency(globalData.net.vfcash)}</strong></div>  
+                    <div class="modal-row"><span>Instapay / Bank:</span> <strong style="color: ${globalData.net.instapay >= 0 ? '#27ae60' : '#e74c3c'}">${formatCurrency(globalData.net.instapay)}</strong></div>  
+                    <div class="modal-row"><span>Physical Cash Drawer:</span> <strong style="color: ${globalData.net.cash >= 0 ? '#27ae60' : '#e74c3c'}">${formatCurrency(globalData.net.cash)}</strong></div>  
+                `;  
+            } else if (type === 'cogs' || type === 'opex') {  
+                title.innerText = type === 'cogs' ? "COGS Breakdown" : "OPEX Breakdown";  
+                const amount = type === 'cogs' ? globalData.expense.cogs : globalData.expense.opex;  
+                html = `  
+                    <div class="modal-row"><span>Total ${type.toUpperCase()}:</span> <strong>${formatCurrency(amount)}</strong></div>  
+                    <p style="color: #7f8c8d; font-size: 0.9em; text-align: center;">(Check Google Sheets for line-by-line item details)</p>  
+                `;  
+            }  
+  
+            body.innerHTML = html;  
+            modal.style.display = 'flex';  
+        }  
+  
+        function closeModal() {  
+            document.getElementById('dataModal').style.display = 'none';  
+        }  
+  
+        // Close modal if clicked outside the white box  
+        function closeOutside(event) {  
+            if(event.target.id === 'dataModal') {  
+                closeModal();  
+            }  
+        }  
+  
+        window.onload = fetchFinancials;  
+    </script>  
+</body>  
 </html>
