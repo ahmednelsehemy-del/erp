@@ -888,11 +888,11 @@
       </dl></article>`).join('');
   }
   async function restoreStudent(row, id, name) {
-    if (!confirm(`Restore ${name}? Their account comes back with the same ID (${id}) and password, and they return to the payment lists.`)) return;
+    if (!confirm(`Restore ${name}? They get a new account with a new ID (not ${id}) and return to the payment lists. Their old payments stay under ${id}.`)) return;
     try {
       const r = await api('restore', { row, id });
       if (r.status !== 'success') { toast(r.message); return; }
-      toast(`${name} is restored and can sign in again.`);
+      alert(`${name} is back.\n\nNew login ID: ${r.data.id}\nPassword: ${r.data.password}\nPayment: ${r.data.payment}\n\nSend them the new login details.`);
       loaded = false; loadArchive();
     } catch (e) { if (e.message !== 'cancelled') toast('The student was not restored: the server could not be reached.'); }
   }
