@@ -1,1181 +1,1060 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>English Land ERP</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --ink: #1B2B4B;        /* brand navy */
-    --ink-soft: #4A5A78;
-    --muted: #7A869C;
-    --line: #E3E8EF;
-    --bg: #F3F5F9;
-    --surface: #FFFFFF;
-    --blue: #2563A8;
-    --entry: #C55A11;      /* orange = things you enter (same as the input columns in the sheets) */
-    --entry-soft: #FFF4EC;
-    --unpaid: #C0392B;  --unpaid-soft: #FDECEA;
-    --partial: #B7791F; --partial-soft: #FDF4E3;
-    --paid: #2F855A;    --paid-soft: #E8F5EE;
-    --radius-s: 6px; --radius-m: 10px;
-    --font: 'IBM Plex Sans Arabic', 'Segoe UI', Tahoma, Arial, sans-serif;
+// ===================================================================
+//  English Land ERP – Backend (Apps Script مربوط بملف English land ERP)
+// ===================================================================
+//  كل الطلبات POST {action, token, ...} من الداشبورد بعد تسجيل الدخول باسم مستخدم وكلمة مرور
+//  الأدوار: admin (كل شيء) | employee (الطلاب، الدفع، تسجيل طالب جديد)
+//
+//  التركيب:
+//  1) الصق هذا الكود مكان القديم ثم Save
+//  2) Deploy > Manage deployments > ✏️ > Version: New version > Deploy
+//     (Execute as: Me  |  Who has access: Anyone)  → يبقى نفس الرابط
+//  حساب المدير جاهز: سجّل الدخول من الداشبورد ثم غيّر كلمة المرور من زر Change password
+// ===================================================================
+
+// ================== CONFIG ==================
+var DATE_COL = 0;
+
+var REV_AMT_COL  = 2; // Amount
+var REV_MOD_COL  = 3; // Online / On-site
+var REV_TYPE_COL = 4; // Group / Private
+var REV_PAY_COL  = 5; // Payment Method
+var REV_LEDGER_COL = 8; // تم الاحتساب في رصيد الطالب (العمود I)
+
+var EXP_AMT_COL  = 2; // Amount
+var EXP_CAT_COL  = 3; // COGS / OPEX
+var EXP_PAY_COL  = 5; // Payment Method
+
+// الملفات الأخرى
+var SOURCE_ID    = '188qLUa5-71qiKEWMVYK5RSQorMALrN7dWRp3w2w8zzg'; // Students and teachers
+var CONTACT_ID   = '15FsUh4dj1xKxcgjcHO7L2clEcuFQdBnCRMHXMl79Tzk'; // Students_Contact_Payments
+var SOURCE_SHEET = 'Students';
+var TEACHERS_SHEET = 'Teachers';
+var CONTACT_SHEET = 'Students Payments';
+var CONTACT_FIRST_ROW = 3;
+var STATS_SHEET  = 'إحصائية';
+var STATS_FIRST_ROW = 11, STATS_LAST_ROW = 90;
+var LOG_SHEET = 'Dashboard Log';
+var ARCHIVE_SHEET = 'Archive';     // الطلاب المتوقفون (يُنشأ تلقائياً في ملف Students and teachers)   // سجل: من فعل ماذا ومتى (يُنشأ تلقائياً في ملف ERP)
+// أعمدة تبويب "إحصائية"
+var SC = { id: 1, payment: 4, status: 6, due: 7, method: 8, paid: 9, modality: 10, classType: 11, send: 12, sentAt: 13 };
+
+var PAID = 'تم الدفع', UNPAID = 'لم يدفع', PARTIAL = 'متبقي عليه';
+var METHODS = ['Cash in Branch', 'Vodafone Cash', 'Instapay'];
+var SKIP_IDS = ['s100'];
+var SESSION_SECONDS = 6 * 60 * 60;   // مدة الجلسة: 6 ساعات ثم يُطلب تسجيل الدخول مرة أخرى
+// ============================================
+
+// ===================================================================
+//  حساب المدير الأول (يُنشأ تلقائياً عند أول تسجيل دخول)
+// ===================================================================
+// كلمة المرور غير مكتوبة هنا: هذه بصمة مشفّرة (hash) منها فقط.
+// تُستخدم مرة واحدة فقط عندما لا يوجد أي حساب. بعد ذلك تُدار الحسابات من تبويب Team.
+var BOOTSTRAP_ADMIN = {
+  username: 'ahmedsehemy',
+  name: 'Ahmed Sehemy',
+  salt: 'acae6305-adaf-40ab-a5ad-b4bb3f23dd80',
+  hash: '7F8NXb7OQ3ULF8vBdz43RNldEsOIEdk3fbeRxV/7T94='
+};
+
+function ensureAdmin_(users) {
+  if (Object.keys(users).length) return users;
+  users[BOOTSTRAP_ADMIN.username] = {
+    name: BOOTSTRAP_ADMIN.name, role: 'admin', salt: BOOTSTRAP_ADMIN.salt, hash: BOOTSTRAP_ADMIN.hash,
+    active: true, created: new Date().toISOString(), v: 1
+  };
+  saveUsers_(users);
+  return users;
+}
+
+// ===================================================================
+//  الطلبات
+// ===================================================================
+// GET احتياطي: بعض المتصفحات (خصوصاً المسجّل فيها أكثر من حساب جوجل) تحوّل الطلب من POST إلى GET
+// أثناء التحويل من رابط Apps Script، فيضيع محتوى الطلب. الداشبورد يعيد إرسال نفس الطلب كـ GET ?p=...
+function doGet(e) {
+  var p = e && e.parameter && e.parameter.p;
+  if (!p) return json_({ status: 'error', code: 'get', message: 'Sign in through the English Land dashboard.' });
+  var body;
+  try { body = JSON.parse(p); } catch (err) { return json_({ status: 'error', message: 'Bad request' }); }
+  return handle_(body);
+}
+
+function doPost(e) {
+  var body;
+  try { body = JSON.parse(e.postData.contents); }
+  catch (err) { return json_({ status: 'error', code: 'get', message: 'Bad request' }); }
+  return handle_(body);
+}
+
+function handle_(body) {
+  try {
+    if (body.action === 'signin') return json_(withLock_(function () { return signIn_(body); }));
+
+    var me = session_(body.token);
+    if (!me) return json_({ status: 'error', code: 'auth', message: 'Your session ended. Sign in again.' });
+
+    switch (body.action) {
+      // للجميع
+      case 'me':             return json_({ status: 'success', data: me });
+      case 'signout':        CacheService.getScriptCache().remove('s_' + body.token); return json_({ status: 'success' });
+      case 'changePassword': return json_(withLock_(function () { return changePassword_(me, body); }));
+      case 'students':       return json_({ status: 'success', data: listStudents_() });
+      case 'pay':            return json_(withLock_(function () { return recordPayment_(body, me); }));
+      case 'createStudent':  return json_(withLock_(function () { return createStudent_(body, me); }));
+      case 'archive':        return json_(withLock_(function () { return archiveStudent_(body, me); }));
+      case 'listArchive':    return json_({ status: 'success', data: listArchive_() });
+      case 'expenses':       return json_({ status: 'success', data: listExpenses_(me) });
+      case 'addExpense':     return json_(withLock_(function () { return addExpense_(body, me); }));
+    }
+    // للمدير فقط
+    if (me.role !== 'admin') return json_({ status: 'error', message: 'Only the admin can do this.' });
+    switch (body.action) {
+      case 'finance':     return json_({ status: 'success', data: finance_() });
+      case 'report':      log_(me, 'Downloaded Excel report', ''); return json_({ status: 'success', data: report_() });
+      case 'listUsers':   return json_({ status: 'success', data: listUsers_() });
+      case 'createUser':  return json_(withLock_(function () { return createUser_(me, body); }));
+      case 'updateUser':  return json_(withLock_(function () { return updateUser_(me, body); }));
+      case 'restore':     return json_(withLock_(function () { return restoreStudent_(body, me); }));
+      case 'deleteExpense': return json_(withLock_(function () { return deleteExpense_(body, me); }));
+    }
+    return json_({ status: 'error', message: 'Unknown action' });
+  } catch (err) {
+    return json_({ status: 'error', message: err.message });
   }
-  * { box-sizing: border-box; }
-  [hidden] { display: none !important; }
-  html, body { margin: 0; }
-  body { font-family: var(--font); background: var(--bg); color: var(--ink); font-size: 15px; line-height: 1.5; }
-  .num { font-variant-numeric: tabular-nums; }
-  button, input, select, textarea { font: inherit; color: inherit; }
-  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+}
 
-  /* ---------- Top bar ---------- */
-  .topbar { background: var(--ink); color: #fff; }
-  .topbar-inner { max-width: 1200px; margin: 0 auto; padding: 14px 20px 0; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 24px; }
-  .brand { padding-bottom: 14px; }
-  .brand b { font-size: 1.25rem; font-weight: 700; letter-spacing: .2px; }
-  .brand span { display: block; font-size: .8rem; color: #B9C3D6; }
-  .tabs { display: flex; gap: 4px; }
-  .tab { background: none; border: 0; color: #C9D2E3; padding: 10px 16px 12px; border-radius: var(--radius-s) var(--radius-s) 0 0; cursor: pointer; font-weight: 500; }
-  .tab:hover { color: #fff; }
-  .tab[aria-selected="true"] { background: var(--bg); color: var(--ink); font-weight: 600; }
-  .me { padding-bottom: 12px; font-size: .82rem; color: #B9C3D6; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .me b { color: #fff; font-weight: 600; }
-  .me button { background: none; border: 1px solid #4A5A78; color: #fff; border-radius: var(--radius-s); padding: 4px 10px; cursor: pointer; }
-  .me button:hover { border-color: #8D9BB5; }
-  .me .report { background: var(--entry); border-color: var(--entry); font-weight: 600; }
-  .me .report:hover { background: #A94A0D; }
-  .me .report:disabled { opacity: .6; cursor: wait; }
+function withLock_(fn) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) return { status: 'error', message: 'The system is busy. Try again in a few seconds.' };
+  try { return fn(); } finally { lock.releaseLock(); }
+}
 
-  /* ---------- Sign in ---------- */
-  .signin { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .signin-side { background: var(--ink); color: #fff; padding: 48px; display: flex; flex-direction: column; justify-content: space-between; }
-  .signin-side h1 { font-size: 2.6rem; line-height: 1.1; margin: 0 0 12px; font-weight: 700; }
-  .signin-side p { color: #C9D2E3; max-width: 34ch; margin: 0; }
-  .signin-side small { color: #8D9BB5; }
-  .signin-main { display: flex; align-items: center; justify-content: center; padding: 32px 20px; }
-  .signin-card { width: 100%; max-width: 360px; }
-  .signin-card h2 { font-size: 1.4rem; margin-bottom: 4px; }
-  .signin-card .field { margin-bottom: 14px; }
-  .signin-card .btn { width: 100%; }
-  @media (max-width: 760px) { .signin { grid-template-columns: 1fr; } .signin-side { padding: 28px 22px; } .signin-side h1 { font-size: 1.9rem; } .signin-side small { display: none; } }
-
-  /* ---------- Team ---------- */
-  .team-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 20px; align-items: start; }
-  @media (max-width: 900px) { .team-grid { grid-template-columns: 1fr; } }
-  .roster table.people { min-width: 0; }
-  .people td, .people th { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
-  .people th { font-size: .8rem; color: var(--muted); font-weight: 600; background: #FAFBFD; }
-  .people tr:last-child td { border-bottom: 0; }
-  .people .off { color: var(--muted); }
-  .people .acts { display: flex; flex-wrap: wrap; gap: 6px; }
-  .mini { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius-s); padding: 4px 9px; cursor: pointer; font-size: .82rem; }
-  .mini:hover { border-color: #B8C3D3; }
-  .mini.warn { color: var(--unpaid); }
-  .role { font-size: .78rem; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: #EEF1F5; color: var(--ink-soft); }
-  .role.admin { background: var(--ink); color: #fff; }
-
-  main { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
-  .panel[hidden] { display: none; }
-  h2 { font-size: 1.25rem; margin: 0 0 4px; }
-  .lead { color: var(--ink-soft); margin: 0 0 20px; }
-
-  /* ---------- Finance (kept from V3) ---------- */
-  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
-  .toolbar label { font-weight: 600; }
-  .toolbar select, .toolbar button { padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface); cursor: pointer; }
-  .toolbar button:disabled { opacity: .4; cursor: default; }
-  .period-label { color: var(--muted); margin: 0 0 18px; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
-  .card { background: var(--surface); border: 1px solid var(--line); border-top: 4px solid var(--blue); border-radius: var(--radius-m); padding: 18px 18px 16px; text-align: left; cursor: pointer; }
-  .card:hover { border-color: #C9D3E1; }
-  .card h3 { margin: 0 0 6px; color: var(--ink-soft); font-size: .95rem; font-weight: 600; }
-  .card .value { font-size: 1.7rem; font-weight: 700; }
-  .card .change { font-size: .85rem; min-height: 1.3em; }
-  .card .hint { font-size: .78rem; color: var(--muted); margin-top: 6px; }
-  .card.expense { border-top-color: var(--unpaid); } .card.expense .value { color: var(--unpaid); }
-  .card.net { border-top-color: var(--paid); } .card.net .value { color: var(--paid); }
-  .card.net.negative { border-top-color: var(--unpaid); } .card.net.negative .value { color: var(--unpaid); }
-  .up { color: var(--paid); } .down { color: var(--unpaid); } .flat { color: var(--muted); }
-  .box { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 18px; margin-top: 24px; overflow-x: auto; }
-  .box h3 { margin: 0 0 12px; font-size: 1.05rem; }
-  table { width: 100%; border-collapse: collapse; }
-  .fin th, .fin td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  .fin th:first-child, .fin td:first-child { text-align: left; }
-  .fin th { color: var(--muted); font-size: .82rem; font-weight: 600; }
-  .fin tbody tr { cursor: pointer; } .fin tbody tr:hover { background: #F7F9FC; }
-  .fin tbody tr.active { background: #EAF1FA; font-weight: 600; }
-  .fin tfoot td { font-weight: 700; background: #F7F9FC; }
-  .pos { color: var(--paid); } .neg { color: var(--unpaid); }
-
-  /* ---------- Students ---------- */
-  .tally { display: flex; flex-wrap: wrap; gap: 28px; margin: 0 0 18px; }
-  .tally div { min-width: 120px; }
-  .tally b { display: block; font-size: 1.5rem; font-weight: 700; }
-  .tally span { color: var(--ink-soft); font-size: .85rem; }
-  .tally .t-unpaid b { color: var(--unpaid); } .tally .t-partial b { color: var(--partial); }
-  .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
-  .search { flex: 1 1 260px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface); }
-  .seg { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-s); overflow: hidden; }
-  .seg button { border: 0; background: none; padding: 9px 12px; cursor: pointer; color: var(--ink-soft); }
-  .seg button + button { border-left: 1px solid var(--line); }
-  .seg button[aria-pressed="true"] { background: var(--ink); color: #fff; }
-  .refresh { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius-s); padding: 9px 12px; cursor: pointer; }
-
-  .roster { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); overflow: hidden; }
-  .roster table { min-width: 760px; }
-  .roster-wrap { overflow-x: auto; }
-  .roster th { text-align: left; font-size: .8rem; font-weight: 600; color: var(--muted); padding: 10px 14px; border-bottom: 1px solid var(--line); background: #FAFBFD; }
-  .roster td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-  .roster tr:last-child td { border-bottom: 0; }
-  .roster td:first-child { border-left: 4px solid transparent; }
-  .roster tr.s-unpaid td:first-child { border-left-color: var(--unpaid); }
-  .roster tr.s-partial td:first-child { border-left-color: var(--partial); }
-  .roster tr.s-paid td:first-child { border-left-color: var(--paid); }
-  .who b { display: block; font-weight: 600; }
-  .who small { color: var(--muted); }
-  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: .8rem; font-weight: 600; white-space: nowrap; }
-  .b-unpaid { background: var(--unpaid-soft); color: var(--unpaid); }
-  .b-partial { background: var(--partial-soft); color: var(--partial); }
-  .b-paid { background: var(--paid-soft); color: var(--paid); }
-  .b-none { background: #EEF1F5; color: var(--muted); }
-  .due { font-weight: 700; text-align: right; white-space: nowrap; }
-  .payline { color: var(--ink-soft); font-size: .85rem; text-align: left; unicode-bidi: plaintext; }
-  .btn-pay { border: 1px solid var(--entry); color: var(--entry); background: var(--surface); border-radius: var(--radius-s); padding: 6px 12px; cursor: pointer; font-weight: 600; white-space: nowrap; }
-  .btn-pay:hover { background: var(--entry-soft); }
-  .empty { padding: 36px 20px; text-align: center; color: var(--ink-soft); }
-  .to-archive { background: none; border: 0; padding: 0; margin-left: 8px; color: var(--muted); font-size: .8rem; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
-  .to-archive:hover { color: var(--unpaid); }
-  .btn-danger { background: var(--unpaid); color: #fff; }
-  .btn-danger:hover { background: #A23126; }
-  .btn-danger:disabled { opacity: .55; cursor: wait; }
-  .warnbox { background: var(--unpaid-soft); color: #7A231A; border-radius: var(--radius-s); padding: 10px 12px; margin: 0 0 14px; font-size: .9rem; }
-  .arch-list { display: grid; gap: 12px; }
-  .arch { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid #9AA6BA; border-radius: var(--radius-m); padding: 14px 16px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; }
-  .arch.restored { opacity: .6; border-left-color: var(--paid); }
-  .arch h3 { margin: 0; font-size: 1rem; }
-  .arch .meta { color: var(--muted); font-size: .82rem; }
-  .arch dl { grid-column: 1 / -1; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 6px 0 0; font-size: .9rem; }
-  .arch dt { color: var(--ink-soft); } .arch dd { margin: 0; white-space: pre-wrap; }
-  .arch .owed { color: var(--unpaid); font-weight: 600; }
-  .exp-grid { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: 20px; align-items: start; }
-  @media (max-width: 900px) { .exp-grid { grid-template-columns: minmax(0, 1fr); } }
-  .exp-grid > * { min-width: 0; }
-  .exp-form .field { margin-bottom: 14px; }
-  .exp-form .row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
-  .exp-form .row2 > * { min-width: 0; }
-  .field input { min-width: 0; }
-  .cat-hint { font-size: .8rem; color: var(--muted); margin-top: 4px; }
-  .exp-tally { display: flex; flex-wrap: wrap; gap: 24px; margin: 0 0 14px; }
-  .exp-tally b { display: block; font-size: 1.3rem; } .exp-tally span { color: var(--ink-soft); font-size: .85rem; }
-  .explist td, .explist th { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
-  .explist th { font-size: .8rem; color: var(--muted); font-weight: 600; background: #FAFBFD; }
-  .explist tr:last-child td { border-bottom: 0; }
-  .explist .amt { text-align: right; font-weight: 700; white-space: nowrap; }
-  .tag { font-size: .75rem; font-weight: 600; padding: 1px 7px; border-radius: 999px; }
-  .tag.cogs { background: #EAF1FA; color: var(--blue); } .tag.opex { background: #F1EEF8; color: #5B4A8B; }
-  .roster table.explist { min-width: 0; }
-
-  /* ---------- Forms ---------- */
-  .form { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 22px; max-width: 860px; }
-  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 20px; }
-  .full { grid-column: 1 / -1; }
-  .field label { display: block; font-weight: 600; font-size: .9rem; margin-bottom: 5px; }
-  .field small { display: block; color: var(--muted); font-size: .8rem; margin-top: 4px; }
-  .field input, .field select, .field textarea { width: 100%; padding: 10px 12px; border: 1px solid #CFD7E3; border-radius: var(--radius-s); background: var(--surface); }
-  .field textarea { min-height: 70px; resize: vertical; }
-  .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--blue); outline: none; box-shadow: 0 0 0 3px rgba(37,99,168,.15); }
-  .choice { display: inline-flex; border: 1px solid #CFD7E3; border-radius: var(--radius-s); overflow: hidden; }
-  .choice label { margin: 0; font-weight: 500; padding: 9px 14px; cursor: pointer; }
-  .choice label + label { border-left: 1px solid #CFD7E3; }
-  .choice label { position: relative; }
-  .choice input { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-  .choice input:checked + span { color: #fff; }
-  .choice label:has(input:checked) { background: var(--ink); color: #fff; }
-  .choice label:has(input:focus-visible) { outline: 2px solid var(--blue); outline-offset: -2px; }
-  .section { grid-column: 1 / -1; margin: 6px 0 -4px; padding-top: 14px; border-top: 1px solid var(--line); font-weight: 700; }
-  .actions { display: flex; gap: 10px; align-items: center; margin-top: 22px; flex-wrap: wrap; }
-  .btn { border: 0; border-radius: var(--radius-s); padding: 11px 18px; font-weight: 600; cursor: pointer; }
-  .btn-primary { background: var(--entry); color: #fff; }
-  .btn-primary:hover { background: #A94A0D; }
-  .btn-primary:disabled { opacity: .55; cursor: wait; }
-  .btn-ghost { background: none; border: 1px solid var(--line); color: var(--ink); }
-  .err { color: var(--unpaid); font-weight: 500; }
-  .result { margin-top: 18px; border: 1px solid var(--paid); background: var(--paid-soft); border-radius: var(--radius-m); padding: 16px 18px; }
-  .result h3 { margin: 0 0 8px; color: var(--paid); }
-  .creds { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 6px 0 10px; }
-  .creds dt { color: var(--ink-soft); } .creds dd { margin: 0; font-weight: 700; }
-
-  /* ---------- Dialogs & toast ---------- */
-  .modal { position: fixed; inset: 0; background: rgba(27,43,75,.55); display: none; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
-  .modal.open { display: flex; }
-  .dialog { background: var(--surface); border-radius: 12px; width: 100%; max-width: 480px; max-height: 90vh; overflow-y: auto; padding: 22px; box-shadow: 0 18px 40px rgba(27,43,75,.25); }
-  .dialog h2 { margin-bottom: 2px; }
-  .dialog .sub { color: var(--ink-soft); margin: 0 0 16px; }
-  .dialog .grid { grid-template-columns: 1fr 1fr; }
-  .x { float: right; background: none; border: 0; font-size: 1.6rem; line-height: 1; color: var(--muted); cursor: pointer; }
-  .modal-row { display: flex; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid var(--line); }
-  .modal-row:last-child { border-bottom: 0; }
-  .modal-sec { margin-top: 14px; color: var(--ink-soft); font-weight: 600; font-size: .9rem; }
-  .owe { display: flex; justify-content: space-between; align-items: baseline; background: #F7F9FC; border-radius: var(--radius-s); padding: 10px 12px; margin-bottom: 14px; }
-  .owe b { font-size: 1.3rem; }
-  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 12px 18px; border-radius: var(--radius-s); z-index: 60; display: none; max-width: calc(100% - 32px); }
-  .toast.show { display: block; }
-  .loading { text-align: center; color: var(--muted); padding: 40px 0; }
-
-  @media (max-width: 720px) {
-    .grid, .dialog .grid { grid-template-columns: 1fr; }
-    .topbar-inner { padding-top: 12px; }
-    .tab { padding: 8px 11px 10px; }
-    .roster table { min-width: 0; }
-    .roster thead { display: none; }
-    .roster tr { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); border-left: 4px solid transparent; }
-    .roster tr.s-unpaid { border-left-color: var(--unpaid); } .roster tr.s-partial { border-left-color: var(--partial); } .roster tr.s-paid { border-left-color: var(--paid); }
-    .roster td { border: 0 !important; padding: 0; }
-    .roster td.c-group, .roster td.c-phone { display: none; }
+// ===================================================================
+//  الحسابات وتسجيل الدخول
+// ===================================================================
+// تُحفظ الحسابات في Script Properties (وليس في الشيت) وكلمات المرور مشفّرة (hash)، لا تُخزَّن كما هي
+function loadUsers_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('USERS');
+  return raw ? JSON.parse(raw) : {};
+}
+function saveUsers_(users) {
+  PropertiesService.getScriptProperties().setProperty('USERS', JSON.stringify(users));
+}
+function cleanUsername_(u) {
+  var s = String(u || '').trim().toLowerCase();
+  if (!/^[a-z0-9._-]{3,30}$/.test(s)) throw new Error('Username must be 3–30 English letters, numbers, dot, dash or underscore.');
+  return s;
+}
+function checkPassword_(p) {
+  if (String(p || '').length < 8) throw new Error('Password must be at least 8 characters.');
+}
+function hash_(salt, password) {
+  var v = salt + '|' + password;
+  for (var i = 0; i < 300; i++) {
+    v = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, v + salt, Utilities.Charset.UTF_8));
   }
-  @media (prefers-reduced-motion: no-preference) {
-    .dialog { animation: rise .18s ease-out; }
-    @keyframes rise { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+  return v;
+}
+function saveUser_(users, username, password, name, role) {
+  var u = cleanUsername_(username);
+  checkPassword_(password);
+  var salt = Utilities.getUuid();
+  var old = users[u];
+  users[u] = {
+    name: String(name || u).trim(), role: role === 'admin' ? 'admin' : 'employee',
+    salt: salt, hash: hash_(salt, password), active: true,
+    created: old ? old.created : new Date().toISOString(),
+    v: old ? (old.v || 0) + 1 : 1          // تغيير كلمة المرور ينهي الجلسات القديمة
+  };
+  return u;
+}
+
+function signIn_(b) {
+  var cache = CacheService.getScriptCache();
+  var u = String(b.username || '').trim().toLowerCase();
+  var failKey = 'fail_' + u;
+  var fails = Number(cache.get(failKey) || 0);
+  if (fails >= 5) return { status: 'error', message: 'Too many wrong attempts. Try again in 15 minutes.' };
+
+  var users = ensureAdmin_(loadUsers_());
+  var user = users[u];
+  if (!user || user.hash !== hash_(user.salt, String(b.password || ''))) {
+    cache.put(failKey, String(fails + 1), 900);
+    return { status: 'error', message: 'Wrong username or password.' };
   }
-</style>
-</head>
-<body>
+  if (!user.active) return { status: 'error', message: 'This account is turned off. Ask the admin.' };
+  cache.remove(failKey);
 
-<!-- ================= SIGN IN ================= -->
-<div class="signin" id="signinScreen" hidden>
-  <div class="signin-side">
-    <div><h1>English Land</h1><p>Payments, students and the academy's numbers in one place.</p></div>
-    <small>englishlandacademy.info</small>
-  </div>
-  <div class="signin-main">
-    <form class="signin-card" onsubmit="signIn(event)" novalidate>
-      <h2>Sign in</h2>
-      <p class="sub" style="color:var(--ink-soft);margin:0 0 18px">Use the account the admin gave you.</p>
-      <div class="field"><label for="si-user">Username</label><input id="si-user" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
-      <div class="field"><label for="si-pass">Password</label><input id="si-pass" type="password" autocomplete="current-password" required></div>
-      <button class="btn btn-primary" id="si-btn" type="submit">Sign in</button>
-      <p class="err" id="si-err" role="alert"></p>
-    </form>
-  </div>
-</div>
+  var token = Utilities.getUuid() + Utilities.getUuid().replace(/-/g, '');
+  cache.put('s_' + token, JSON.stringify({ u: u, v: user.v }), SESSION_SECONDS);
+  user.lastLogin = new Date().toISOString();
+  saveUsers_(users);
+  log_({ username: u }, 'Signed in', '');
+  return { status: 'success', data: { token: token, username: u, name: user.name, role: user.role } };
+}
 
-<div id="app" hidden>
-<header class="topbar">
-  <div class="topbar-inner">
-    <div class="brand"><b>English Land</b><span>Academy ERP</span></div>
-    <nav class="tabs" role="tablist">
-      <button class="tab admin-only" role="tab" id="tab-finance" aria-selected="false" onclick="showTab('finance')">Finance</button>
-      <button class="tab" role="tab" id="tab-students" aria-selected="false" onclick="showTab('students')">Students &amp; payments</button>
-      <button class="tab" role="tab" id="tab-new" aria-selected="false" onclick="showTab('new')">New student</button>
-      <button class="tab" role="tab" id="tab-expenses" aria-selected="false" onclick="showTab('expenses')">Expenses</button>
-      <button class="tab" role="tab" id="tab-archive" aria-selected="false" onclick="showTab('archive')">Archive</button>
-      <button class="tab admin-only" role="tab" id="tab-team" aria-selected="false" onclick="showTab('team')">Team</button>
-    </nav>
-    <div class="me" id="meBar"></div>
-  </div>
-</header>
+// يتحقق من الجلسة في كل طلب، فإيقاف الحساب أو تغيير كلمة مروره يسري فوراً
+function session_(token) {
+  if (!token) return null;
+  var raw = CacheService.getScriptCache().get('s_' + token);
+  if (!raw) return null;
+  var s = JSON.parse(raw);
+  var user = loadUsers_()[s.u];
+  if (!user || !user.active || user.v !== s.v) return null;
+  return { username: s.u, name: user.name, role: user.role };
+}
 
-<main>
-  <!-- ================= FINANCE ================= -->
-  <section class="panel" id="panel-finance">
-    <div id="finLoading" class="loading">Loading financial data…</div>
-    <div id="finBody" hidden>
-      <div class="toolbar">
-        <button id="prevBtn" onclick="stepMonth(-1)" aria-label="Previous month">◀</button>
-        <label for="monthSelect">Period</label>
-        <select id="monthSelect" onchange="selectPeriod(this.value)"></select>
-        <button id="nextBtn" onclick="stepMonth(1)" aria-label="Next month">▶</button>
-      </div>
-      <p class="period-label" id="periodLabel"></p>
-      <div class="cards">
-        <div class="card" onclick="openFin('revenue')"><h3>Total revenue</h3><div class="value num" id="val-revenue">0</div><div class="change" id="chg-revenue"></div><div class="hint">Open for the breakdown</div></div>
-        <div class="card expense" onclick="openFin('cogs')"><h3>COGS (direct costs)</h3><div class="value num" id="val-cogs">0</div><div class="change" id="chg-cogs"></div><div class="hint">Open for the breakdown</div></div>
-        <div class="card expense" onclick="openFin('opex')"><h3>OPEX (operations)</h3><div class="value num" id="val-opex">0</div><div class="change" id="chg-opex"></div><div class="hint">Open for the breakdown</div></div>
-        <div class="card net" id="card-net" onclick="openFin('net')"><h3>Net profit</h3><div class="value num" id="val-net">0</div><div class="change" id="chg-net"></div><div class="hint">Open for each wallet</div></div>
-      </div>
-      <div class="box">
-        <h3>Monthly summary</h3>
-        <table class="fin num">
-          <thead><tr><th>Month</th><th>Revenue</th><th>COGS</th><th>OPEX</th><th>Net profit</th><th>Margin</th></tr></thead>
-          <tbody id="monthTableBody"></tbody>
-          <tfoot id="monthTableFoot"></tfoot>
-        </table>
-      </div>
-    </div>
-  </section>
+function changePassword_(me, b) {
+  var users = loadUsers_();
+  var user = users[me.username];
+  if (user.hash !== hash_(user.salt, String(b.oldPassword || ''))) return { status: 'error', message: 'Your current password is not correct.' };
+  saveUser_(users, me.username, String(b.newPassword || ''), user.name, user.role);
+  saveUsers_(users);
+  log_(me, 'Changed own password', '');
+  return { status: 'success' };
+}
 
-  <!-- ================= STUDENTS ================= -->
-  <section class="panel" id="panel-students" hidden>
-    <h2>Students &amp; payments</h2>
-    <p class="lead">Record a payment here and it goes to ERP, Students and teachers, and the payments sheet at once.</p>
-    <div class="tally num" id="tally"></div>
-    <div class="filters">
-      <input class="search" id="search" type="search" placeholder="Search by name, ID or phone" oninput="renderRoster()" aria-label="Search students">
-      <div class="seg" role="group" aria-label="Filter by payment status">
-        <button aria-pressed="false" data-f="all" onclick="setFilter('all')">All</button>
-        <button aria-pressed="true" data-f="owing" onclick="setFilter('owing')">Owing</button>
-        <button aria-pressed="false" data-f="paid" onclick="setFilter('paid')">Paid</button>
-      </div>
-      <button class="refresh" onclick="loadStudents(true)">Refresh</button>
-    </div>
-    <div class="roster">
-      <div class="roster-wrap">
-        <table>
-          <thead><tr><th>Student</th><th class="c-group">Group</th><th class="c-phone">Phone</th><th>Status</th><th style="text-align:right">Owes</th><th></th></tr></thead>
-          <tbody id="rosterBody"><tr><td colspan="6" class="loading">Loading students…</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
+function listUsers_() {
+  var users = loadUsers_();
+  return Object.keys(users).sort().map(function (u) {
+    var x = users[u];
+    return { username: u, name: x.name, role: x.role, active: x.active, created: x.created, lastLogin: x.lastLogin || '' };
+  });
+}
 
-  <!-- ================= NEW STUDENT ================= -->
-  <section class="panel" id="panel-new" hidden>
-    <h2>New student</h2>
-    <p class="lead">Creates the student's account on englishlandacademy.info and adds them to every sheet.</p>
-    <form class="form" id="newForm" onsubmit="createStudent(event)" novalidate>
-      <div class="grid">
-        <div class="field full"><label for="n-name">Full name</label><input id="n-name" required autocomplete="off" placeholder="e.g. Omar Ahmed Ali"><small>English letters. The login ID is made from the first name.</small></div>
-        <div class="field"><label for="n-phone">Phone (parent or student)</label><input id="n-phone" required inputmode="tel" placeholder="01012345678"></div>
-        <div class="field"><label for="n-teacher">Teacher</label><select id="n-teacher"></select></div>
+function createUser_(me, b) {
+  var users = loadUsers_();
+  var u = cleanUsername_(b.username);
+  if (users[u]) return { status: 'error', message: 'The username "' + u + '" is taken.' };
+  if (!String(b.name || '').trim()) return { status: 'error', message: 'Enter the employee\'s name.' };
+  saveUser_(users, u, String(b.password || ''), b.name, b.role);
+  saveUsers_(users);
+  log_(me, 'Created account', u + ' (' + users[u].role + ')');
+  return { status: 'success', data: { username: u } };
+}
 
-        <div class="section">Class</div>
-        <div class="field"><label for="n-group">Group</label><input id="n-group" list="groupList" placeholder="Pick an existing group or type a new one" oninput="fillFromGroup()"><datalist id="groupList"></datalist></div>
-        <div class="field"><label for="n-course">Course / level</label><input id="n-course" list="courseList" required placeholder="e.g. SC1, Level2"><datalist id="courseList"></datalist></div>
-        <div class="field full"><label for="n-schedule">Schedule</label><input id="n-schedule" placeholder="e.g. Saturday 3:00 - Thursday at 5:00"></div>
-        <div class="field"><label>Attends</label>
-          <div class="choice"><label><input type="radio" name="n-mod" value="On-site" checked><span>On-site</span></label><label><input type="radio" name="n-mod" value="Online"><span>Online</span></label></div>
-        </div>
-        <div class="field"><label>Class type</label>
-          <div class="choice"><label><input type="radio" name="n-type" value="Group" checked><span>Group</span></label><label><input type="radio" name="n-type" value="Private"><span>Private</span></label></div>
-        </div>
+// تشغيل/إيقاف حساب، تغيير الدور، أو تعيين كلمة مرور جديدة
+function updateUser_(me, b) {
+  var users = loadUsers_();
+  var u = String(b.username || '').trim().toLowerCase();
+  var user = users[u];
+  if (!user) return { status: 'error', message: 'Account not found.' };
+  var admins = Object.keys(users).filter(function (k) { return users[k].role === 'admin' && users[k].active; });
+  var losingAdmin = user.role === 'admin' && ((b.active === false) || (b.role && b.role !== 'admin'));
+  if (losingAdmin && admins.length <= 1) return { status: 'error', message: 'Keep at least one active admin account.' };
 
-        <div class="section">Payment</div>
-        <div class="field"><label for="n-fee">Monthly fee (EGP)</label><input id="n-fee" type="number" min="1" step="1" value="600" required class="num"><small>Used for the automatic renewal on the 1st of each month.</small></div>
-        <div class="field"><label for="n-paid">Paid now (EGP)</label><input id="n-paid" type="number" min="0" step="1" value="0" class="num" oninput="togglePaidMethod()"><small>Leave 0 if the student hasn't paid yet.</small></div>
-        <div class="field" id="n-method-wrap" hidden><label for="n-method">Paid by</label><select id="n-method"></select></div>
+  var what = [];
+  if (b.password) { saveUser_(users, u, String(b.password), user.name, user.role); user = users[u]; what.push('new password'); }
+  if (typeof b.active === 'boolean' && b.active !== user.active) { user.active = b.active; user.v = (user.v || 0) + 1; what.push(b.active ? 'turned on' : 'turned off'); }
+  if (b.role && b.role !== user.role) { user.role = b.role === 'admin' ? 'admin' : 'employee'; user.v = (user.v || 0) + 1; what.push('role ' + user.role); }
+  saveUsers_(users);
+  log_(me, 'Updated account', u + ': ' + what.join(', '));
+  return { status: 'success' };
+}
 
-        <div class="section">Account</div>
-        <div class="field"><label for="n-pass">Password</label><input id="n-pass" autocomplete="off" placeholder="Leave empty to use the student ID"></div>
-        <div class="field full"><label for="n-notes">Notes</label><textarea id="n-notes" placeholder="Anything the team should know"></textarea></div>
-      </div>
-      <div class="actions">
-        <button class="btn btn-primary" id="createBtn" type="submit">Create student</button>
-        <span class="err" id="newErr" role="alert"></span>
-      </div>
-      <div id="newResult"></div>
-    </form>
-  </section>
+// سجل النشاط في تبويب "Dashboard Log" داخل ملف ERP
+function log_(me, action, details) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sh = ss.getSheetByName(LOG_SHEET);
+    if (!sh) {
+      sh = ss.insertSheet(LOG_SHEET);
+      sh.appendRow(['Time', 'User', 'Action', 'Details']);
+      sh.setFrozenRows(1);
+      sh.getRange(1, 1, 1, 4).setFontWeight('bold');
+    }
+    sh.appendRow([new Date(), me.username, action, details]);
+  } catch (err) {}
+}
 
-  <!-- ================= EXPENSES ================= -->
-  <section class="panel" id="panel-expenses" hidden>
-    <h2>Expenses</h2>
-    <p class="lead" id="expLead">Record money paid out. It goes straight to the Expenses sheet in ERP and into the finance numbers.</p>
-    <div class="exp-grid">
-      <form class="form exp-form" onsubmit="addExpense(event)" novalidate style="max-width:none">
-        <h3 style="margin:0 0 14px">Add an expense</h3>
-        <div class="field"><label for="x-item">What was it for?</label><input id="x-item" list="itemList" autocomplete="off" placeholder="e.g. Green API, Rahma Mohamed, printer paper"><datalist id="itemList"></datalist><small>Who was paid, or what was bought.</small></div>
-        <div class="row2">
-          <div class="field"><label for="x-amount">Amount (EGP)</label><input id="x-amount" type="number" min="1" step="1" class="num"></div>
-          <div class="field"><label for="x-date">Date</label><input id="x-date" type="date"></div>
-        </div>
-        <div class="field"><label for="x-sub">Type</label><select id="x-sub" onchange="syncCategory()"></select></div>
-        <div class="field"><label>Category</label>
-          <div class="choice"><label><input type="radio" name="x-cat" value="COGS"><span>COGS</span></label><label><input type="radio" name="x-cat" value="OPEX" checked><span>OPEX</span></label></div>
-          <div class="cat-hint">COGS: direct teaching costs (teachers, refunds, materials). OPEX: running the academy (rent, admin, marketing, tech).</div>
-        </div>
-        <div class="field"><label for="x-method">Paid from</label><select id="x-method"></select></div>
-        <div class="actions" style="margin-top:6px"><button class="btn btn-primary" id="x-btn" type="submit">Add expense</button></div>
-        <p class="err" id="x-err" role="alert"></p>
-      </form>
-      <div>
-        <div class="filters admin-only" id="expFilters">
-          <label for="x-month" style="font-weight:600">Month</label>
-          <select id="x-month" class="refresh" onchange="renderExpenses()"></select>
-          <button class="refresh" onclick="loadExpenses()">Refresh</button>
-        </div>
-        <div class="exp-tally num admin-only" id="expTally"></div>
-        <div class="roster"><div class="roster-wrap">
-          <table class="explist"><thead><tr><th>Date</th><th>For</th><th>Type</th><th>Paid from</th><th style="text-align:right">Amount</th><th></th></tr></thead>
-          <tbody id="expBody"><tr><td colspan="6" class="loading">Loading expenses…</td></tr></tbody></table>
-        </div></div>
-      </div>
-    </div>
-  </section>
+// ===================================================================
+//  الداشبورد المالي
+// ===================================================================
+function finance_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tz = ss.getSpreadsheetTimeZone();
 
-  <!-- ================= ARCHIVE ================= -->
-  <section class="panel" id="panel-archive" hidden>
-    <h2>Archive</h2>
-    <p class="lead">Students who stopped or left. Their website account is deleted and they're no longer renewed or counted as owing.</p>
-    <div class="filters">
-      <input class="search" id="archSearch" type="search" placeholder="Search by name, ID or phone" oninput="renderArchive()" aria-label="Search archive">
-      <button class="refresh" onclick="loadArchive()">Refresh</button>
-    </div>
-    <div class="arch-list" id="archList"><p class="loading">Loading the archive…</p></div>
-  </section>
+  var revData = ss.getSheetByName("Revenues").getDataRange().getValues();
+  var expData = ss.getSheetByName("Expenses").getDataRange().getValues();
 
-  <!-- ================= TEAM (admin) ================= -->
-  <section class="panel" id="panel-team" hidden>
-    <h2>Team</h2>
-    <p class="lead">Accounts for the people who use this dashboard. Employees can record payments and register students. Only admins see Finance, Team and the Excel report.</p>
-    <div class="team-grid">
-      <div class="roster"><div class="roster-wrap">
-        <table class="people"><thead><tr><th>Person</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead>
-        <tbody id="peopleBody"><tr><td colspan="4" class="loading">Loading accounts…</td></tr></tbody></table>
-      </div></div>
-      <form class="form" onsubmit="createUser(event)" novalidate style="max-width:none">
-        <h3 style="margin:0 0 14px">Add an account</h3>
-        <div class="field" style="margin-bottom:14px"><label for="u-name">Full name</label><input id="u-name" autocomplete="off" placeholder="e.g. Sara Rassed"></div>
-        <div class="field" style="margin-bottom:14px"><label for="u-user">Username</label><input id="u-user" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="e.g. sara"><small>English letters and numbers. They type this to sign in.</small></div>
-        <div class="field" style="margin-bottom:14px"><label for="u-pass">Password</label><input id="u-pass" autocomplete="new-password" placeholder="At least 8 characters"><small>Give it to them privately. They can change it after signing in.</small></div>
-        <div class="field"><label>Role</label>
-          <div class="choice"><label><input type="radio" name="u-role" value="employee" checked><span>Employee</span></label><label><input type="radio" name="u-role" value="admin"><span>Admin</span></label></div>
-        </div>
-        <div class="actions"><button class="btn btn-primary" id="u-btn" type="submit">Add account</button></div>
-        <p class="err" id="u-err" role="alert"></p>
-      </form>
-    </div>
-  </section>
-</main>
-</div>
+  var allTime = newBucket();
+  var months = {};
 
-<!-- Finance details -->
-<div class="modal" id="finModal" onclick="if(event.target===this)closeModal('finModal')">
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="finTitle">
-    <button class="x" onclick="closeModal('finModal')" aria-label="Close">×</button>
-    <h2 id="finTitle">Details</h2>
-    <div id="finModalBody" class="num"></div>
-  </div>
-</div>
-
-<!-- Payment -->
-<div class="modal" id="payModal" onclick="if(event.target===this)closeModal('payModal')">
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="payTitle">
-    <button class="x" onclick="closeModal('payModal')" aria-label="Close">×</button>
-    <h2 id="payTitle">Record payment</h2>
-    <p class="sub" id="paySub"></p>
-    <div class="owe"><span>Owes now</span><b class="num" id="payOwes"></b></div>
-    <form onsubmit="submitPayment(event)" novalidate>
-      <div class="grid">
-        <div class="field"><label for="p-amount">Amount paid (EGP)</label><input id="p-amount" type="number" min="1" step="1" class="num" required></div>
-        <div class="field"><label for="p-method">Paid by</label><select id="p-method"></select></div>
-        <div class="field"><label>Attends</label>
-          <div class="choice"><label><input type="radio" name="p-mod" value="On-site"><span>On-site</span></label><label><input type="radio" name="p-mod" value="Online"><span>Online</span></label></div>
-        </div>
-        <div class="field"><label>Class type</label>
-          <div class="choice"><label><input type="radio" name="p-type" value="Group"><span>Group</span></label><label><input type="radio" name="p-type" value="Private"><span>Private</span></label></div>
-        </div>
-      </div>
-      <div class="actions">
-        <button class="btn btn-primary" id="payBtn" type="submit">Record payment</button>
-        <button class="btn btn-ghost" type="button" onclick="closeModal('payModal')">Cancel</button>
-      </div>
-      <p class="err" id="payErr" role="alert"></p>
-    </form>
-  </div>
-</div>
-
-<!-- Change own password -->
-<div class="modal" id="pwModal" onclick="if(event.target===this)closeModal('pwModal')">
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="pwTitle" style="max-width:400px">
-    <button class="x" onclick="closeModal('pwModal')" aria-label="Close">×</button>
-    <h2 id="pwTitle">Change your password</h2>
-    <p class="sub">You'll sign in again with the new password.</p>
-    <form onsubmit="changePassword(event)" novalidate>
-      <div class="field" style="margin-bottom:14px"><label for="pw-old">Current password</label><input id="pw-old" type="password" autocomplete="current-password"></div>
-      <div class="field" style="margin-bottom:14px"><label for="pw-new">New password</label><input id="pw-new" type="password" autocomplete="new-password"><small>At least 8 characters.</small></div>
-      <div class="field"><label for="pw-new2">New password again</label><input id="pw-new2" type="password" autocomplete="new-password"></div>
-      <div class="actions"><button class="btn btn-primary" id="pw-btn" type="submit">Change password</button><button class="btn btn-ghost" type="button" onclick="closeModal('pwModal')">Cancel</button></div>
-      <p class="err" id="pw-err" role="alert"></p>
-    </form>
-  </div>
-</div>
-
-<!-- Admin: set a new password for someone -->
-<div class="modal" id="resetModal" onclick="if(event.target===this)closeModal('resetModal')">
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="rsTitle" style="max-width:400px">
-    <button class="x" onclick="closeModal('resetModal')" aria-label="Close">×</button>
-    <h2 id="rsTitle">Set a new password</h2>
-    <p class="sub" id="rsSub"></p>
-    <form onsubmit="resetPassword(event)" novalidate>
-      <div class="field"><label for="rs-pass">New password</label><input id="rs-pass" autocomplete="new-password"><small>At least 8 characters. Their current sessions end right away.</small></div>
-      <div class="actions"><button class="btn btn-primary" id="rs-btn" type="submit">Set password</button><button class="btn btn-ghost" type="button" onclick="closeModal('resetModal')">Cancel</button></div>
-      <p class="err" id="rs-err" role="alert"></p>
-    </form>
-  </div>
-</div>
-
-<!-- Send to archive -->
-<div class="modal" id="archModal" onclick="if(event.target===this)closeModal('archModal')">
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="arTitle">
-    <button class="x" onclick="closeModal('archModal')" aria-label="Close">×</button>
-    <h2 id="arTitle">Send to archive</h2>
-    <p class="sub" id="arSub"></p>
-    <p class="warnbox" id="arWarn"></p>
-    <form onsubmit="submitArchive(event)" novalidate>
-      <div class="field" style="margin-bottom:14px"><label for="ar-reason">Why is the student leaving?</label>
-        <select id="ar-reason"><option>Stopped attending</option><option>Left the academy</option><option>Finished the course</option><option>Moved to another city</option><option>Financial reasons</option><option>Other</option></select></div>
-      <div class="field" style="margin-bottom:14px"><label for="ar-level">Their level now</label><textarea id="ar-level" placeholder="e.g. Finished Level 3. Good speaking, needs work on writing."></textarea></div>
-      <div class="field"><label for="ar-notes">Other notes</label><textarea id="ar-notes" placeholder="Anything useful if they come back, e.g. would return in the summer"></textarea></div>
-      <div class="actions"><button class="btn btn-danger" id="ar-btn" type="submit">Archive and delete account</button><button class="btn btn-ghost" type="button" onclick="closeModal('archModal')">Cancel</button></div>
-      <p class="err" id="ar-err" role="alert"></p>
-    </form>
-  </div>
-</div>
-
-<div class="toast" id="toast" role="status"></div>
-
-<script>
-  const API_URL = "https://script.google.com/macros/s/AKfycbzFfp3tp64salh_hFPn1sw55y_XHSIazjzqQY7PzShvV05x8Dc_vY54KlMnUZZVCh95/exec";
-
-  /* =================== shared =================== */
-  const $ = id => document.getElementById(id);
-  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
-  const money = n => new Intl.NumberFormat('en-EG', { maximumFractionDigits: 0 }).format(n || 0) + ' EGP';
-  function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 4000); }
-  function openModal(id) { $(id).classList.add('open'); }
-  function closeModal(id) { $(id).classList.remove('open'); }
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') ['finModal', 'payModal', 'pwModal', 'resetModal', 'archModal'].forEach(closeModal); });
-
-  // The sign-in token is kept for this browser tab only (closing the tab signs you out)
-  let TOKEN = '', ME = null;
-  try { TOKEN = sessionStorage.getItem('el_token') || ''; } catch (e) {}
-  const isAdmin = () => ME && ME.role === 'admin';
-
-  async function post(body) {
-    // text/plain keeps this a "simple" request, which Apps Script accepts from any site
-    const r = await fetch(API_URL, { method: 'POST', body: JSON.stringify(body) });
-    return r.json();
-  }
-  async function api(action, data) {
-    const r = await post(Object.assign({ action, token: TOKEN }, data || {}));
-    if (r.status !== 'success' && r.code === 'auth') { endSession(r.message); throw new Error('cancelled'); }
-    return r;
+  for (var i = 1; i < revData.length; i++) {
+    var row = revData[i];
+    var amt = toNumber(row[REV_AMT_COL]);
+    if (!amt) continue;
+    // دفعة عليها تحذير (مكررة أو أكبر من المستحق) لا تُحسب حتى تُراجع
+    if (String(row[REV_LEDGER_COL] == null ? "" : row[REV_LEDGER_COL]).indexOf("⚠") === 0) continue;
+    var key = monthKey(row[DATE_COL], tz);
+    if (!months[key]) months[key] = newBucket();
+    addRevenue(allTime, row, amt);
+    addRevenue(months[key], row, amt);
   }
 
-  function showSignin(msg) {
-    $('app').hidden = true; $('signinScreen').hidden = false;
-    $('si-err').textContent = msg || '';
-    setTimeout(() => $('si-user').focus(), 50);
-  }
-  function endSession(msg) {
-    TOKEN = ''; ME = null; try { sessionStorage.removeItem('el_token'); } catch (e) {}
-    STUDENTS = []; loaded = false; finLoaded = false;
-    showSignin(msg);
-  }
-  async function signIn(e) {
-    e.preventDefault();
-    const username = $('si-user').value.trim(), password = $('si-pass').value;
-    if (!username || !password) { $('si-err').textContent = 'Enter your username and password.'; return; }
-    $('si-btn').disabled = true; $('si-btn').textContent = 'Signing in…';
-    try {
-      const r = await post({ action: 'signin', username, password });
-      if (r.status !== 'success') { $('si-err').textContent = r.message; return; }
-      TOKEN = r.data.token; try { sessionStorage.setItem('el_token', TOKEN); } catch (e2) {}
-      $('si-pass').value = '';
-      startApp(r.data);
-    } catch (err) { $('si-err').textContent = 'The server could not be reached. Check your connection and try again.'; }
-    finally { $('si-btn').disabled = false; $('si-btn').textContent = 'Sign in'; }
-  }
-  async function signOut() {
-    try { await post({ action: 'signout', token: TOKEN }); } catch (e) {}
-    endSession('You signed out.');
-  }
-  function startApp(me) {
-    ME = me;
-    $('signinScreen').hidden = true; $('app').hidden = false;
-    document.querySelectorAll('.admin-only').forEach(el => el.hidden = !isAdmin());
-    $('meBar').innerHTML = `<span><b>${esc(me.name)}</b> (${me.role === 'admin' ? 'Admin' : 'Employee'})</span>`
-      + (isAdmin() ? '<button class="report" id="reportBtn" onclick="downloadReport()">Download Excel report</button>' : '')
-      + '<button onclick="openPw()">Change password</button><button onclick="signOut()">Sign out</button>';
-    showTab(isAdmin() ? 'finance' : 'students');
+  for (var j = 1; j < expData.length; j++) {
+    var row2 = expData[j];
+    var amt2 = toNumber(row2[EXP_AMT_COL]);
+    if (!amt2) continue;
+    var key2 = monthKey(row2[DATE_COL], tz);
+    if (!months[key2]) months[key2] = newBucket();
+    addExpense(allTime, row2, amt2);
+    addExpense(months[key2], row2, amt2);
   }
 
-  /* ---------- change own password ---------- */
-  function openPw() { ['pw-old', 'pw-new', 'pw-new2'].forEach(id => $(id).value = ''); $('pw-err').textContent = ''; openModal('pwModal'); setTimeout(() => $('pw-old').focus(), 50); }
-  async function changePassword(e) {
-    e.preventDefault();
-    const o = $('pw-old').value, n = $('pw-new').value, n2 = $('pw-new2').value;
-    if (n.length < 8) { $('pw-err').textContent = 'The new password needs at least 8 characters.'; return; }
-    if (n !== n2) { $('pw-err').textContent = 'The two new passwords are different.'; return; }
-    $('pw-btn').disabled = true;
-    try {
-      const r = await api('changePassword', { oldPassword: o, newPassword: n });
-      if (r.status !== 'success') { $('pw-err').textContent = r.message; return; }
-      closeModal('pwModal'); endSession('Password changed. Sign in with your new password.');
-    } catch (err) { if (err.message !== 'cancelled') $('pw-err').textContent = 'The server could not be reached. Try again.'; }
-    finally { $('pw-btn').disabled = false; }
-  }
+  calcNet(allTime);
+  var keys = Object.keys(months).sort(function (a, b) {
+    if (a === "Undated") return 1;
+    if (b === "Undated") return -1;
+    return a < b ? -1 : 1;
+  });
+  keys.forEach(function (k) { calcNet(months[k]); });
+  return { allTime: allTime, months: months, monthKeys: keys };
+}
 
-  /* =================== tabs =================== */
-  function showTab(name) {
-    if ((name === 'finance' || name === 'team') && !isAdmin()) name = 'students';
-    ['finance', 'students', 'new', 'expenses', 'archive', 'team'].forEach(t => {
-      $('panel-' + t).hidden = t !== name;
-      $('tab-' + t).setAttribute('aria-selected', t === name);
+// ===================================================================
+//  تقرير Excel (للمدير): كل البيانات في ملف واحد
+// ===================================================================
+function report_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tz = ss.getSpreadsheetTimeZone();
+  var asRows = function (name) {
+    var sh = ss.getSheetByName(name);
+    if (!sh) return [];
+    return sh.getDataRange().getValues().map(function (r) {
+      return r.map(function (v) { return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd HH:mm') : v; });
     });
-    if (name === 'finance' && !finLoaded) fetchFinancials(false);
-    if (name === 'students' || name === 'new') loadStudents(false).catch(() => {});
-    if (name === 'team') loadUsers();
-    if (name === 'archive') loadArchive();
-    if (name === 'expenses') { if (!expLoaded) loadExpenses(); if (!$('x-date').value) $('x-date').value = todayStr(); }
-  }
+  };
+  return {
+    generated: Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm'),
+    students: listStudents_().students,
+    revenues: asRows('Revenues'),
+    expenses: asRows('Expenses'),
+    finance: finance_(),
+    log: asRows(LOG_SHEET),
+    archive: archiveRowsForReport_(),
+    users: listUsers_()
+  };
+}
 
-  /* =================== FINANCE (same data as V3) =================== */
-  let apiData = {}, currentKey = 'all', finLoaded = false;
-  function monthLabel(key) {
-    if (key === 'all') return 'All time';
-    if (key === 'Undated') return 'Undated entries';
-    const [y, m] = key.split('-').map(Number);
-    return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  }
-  const getPeriod = key => key === 'all' ? apiData.allTime : apiData.months[key];
-  const colorFor = n => n >= 0 ? 'var(--paid)' : 'var(--unpaid)';
+// ---------- قائمة الطلاب ----------
+function listStudents_() {
+  var src = SpreadsheetApp.openById(SOURCE_ID);
+  var sh = src.getSheetByName(SOURCE_SHEET);
+  var data = sh.getDataRange().getValues();
+  var col = headerMap_(data[0]);
 
-  async function fetchFinancials(keepPeriod) {
-    if (!isAdmin()) return;
-    try {
-      const r = await api('finance');
-      if (r.status !== 'success') { $('finLoading').textContent = r.message; return; }
-      finLoaded = true;
-      apiData = r.data;
-      buildSelector(); buildTable();
-      const dated = apiData.monthKeys.filter(k => k !== 'Undated');
-      selectPeriod(keepPeriod && getPeriod(currentKey) ? currentKey : (dated.length ? dated[dated.length - 1] : 'all'));
-      $('finLoading').hidden = true; $('finBody').hidden = false;
-    } catch (e) {
-      if (e.message !== 'cancelled') $('finLoading').textContent = 'Financial data did not load. Check your connection, or that the Apps Script is deployed and the URL in this page is correct.';
-    }
-  }
-  function buildSelector() {
-    let html = '<option value="all">All time</option>';
-    [...apiData.monthKeys].reverse().forEach(k => { html += `<option value="${k}">${monthLabel(k)}</option>`; });
-    $('monthSelect').innerHTML = html;
-  }
-  function buildTable() {
-    let html = '';
-    [...apiData.monthKeys].reverse().forEach(k => {
-      const p = apiData.months[k];
-      const margin = p.revenue.total ? (p.net.total / p.revenue.total * 100).toFixed(1) + '%' : '—';
-      html += `<tr data-key="${k}" onclick="selectPeriod('${k}')"><td>${monthLabel(k)}</td><td>${money(p.revenue.total)}</td><td>${money(p.expense.cogs)}</td><td>${money(p.expense.opex)}</td><td class="${p.net.total >= 0 ? 'pos' : 'neg'}">${money(p.net.total)}</td><td>${margin}</td></tr>`;
+  var contact = contactInfo_();
+  var stats = statsInfo_();
+
+  var students = [], courses = {}, groups = {};
+  for (var r = 1; r < data.length; r++) {
+    var id = String(data[r][col['student id']] || '').trim();
+    if (!id || SKIP_IDS.indexOf(id.toLowerCase()) !== -1) continue;
+    var key = id.toLowerCase();
+    var payText = String(data[r][col['payment']] || '').trim();
+    var p = parsePayment_(payText) || { status: '', due: 0 };
+    var c = contact[key] || {};
+    var s = stats[key] || {};
+    var course = cell_(data[r], col['course']);
+    var group = cell_(data[r], col['group']);
+    var schedule = cell_(data[r], col['schedule']);
+    students.push({
+      id: id,
+      name: cell_(data[r], col['name']),
+      course: course, group: group, schedule: schedule,
+      teacher: cell_(data[r], col['teacher']),
+      phone: digits_(data[r][col['phone']]),
+      payment: payText,
+      status: p.status === PAID ? 'paid' : p.status === PARTIAL ? 'partial' : p.status === UNPAID ? 'unpaid' : '',
+      due: p.due,
+      modality: c.modality || s.modality || '',
+      classType: s.classType || '',
+      fee: c.fee || '',
+      notes: c.notes || ''
     });
-    $('monthTableBody').innerHTML = html || '<tr><td colspan="6" style="text-align:center;color:var(--muted)">No entries yet. Add rows to the Revenues or Expenses sheet.</td></tr>';
-    const a = apiData.allTime;
-    const m = a.revenue.total ? (a.net.total / a.revenue.total * 100).toFixed(1) + '%' : '—';
-    $('monthTableFoot').innerHTML = `<tr onclick="selectPeriod('all')" style="cursor:pointer"><td>All time</td><td>${money(a.revenue.total)}</td><td>${money(a.expense.cogs)}</td><td>${money(a.expense.opex)}</td><td class="${a.net.total >= 0 ? 'pos' : 'neg'}">${money(a.net.total)}</td><td>${m}</td></tr>`;
+    if (course) courses[course] = true;
+    if (group && !groups[group]) groups[group] = { group: group, course: course, schedule: schedule };
   }
-  function selectPeriod(key) {
-    currentKey = key;
-    const p = getPeriod(key); if (!p) return;
-    $('monthSelect').value = key;
-    $('periodLabel').textContent = 'Showing ' + monthLabel(key);
-    $('val-revenue').textContent = money(p.revenue.total);
-    $('val-cogs').textContent = money(p.expense.cogs);
-    $('val-opex').textContent = money(p.expense.opex);
-    $('val-net').textContent = money(p.net.total);
-    $('card-net').classList.toggle('negative', p.net.total < 0);
-    const prev = previousMonth(key);
-    setChange('chg-revenue', p.revenue.total, prev && prev.revenue.total, false);
-    setChange('chg-cogs', p.expense.cogs, prev && prev.expense.cogs, true);
-    setChange('chg-opex', p.expense.opex, prev && prev.expense.opex, true);
-    setChange('chg-net', p.net.total, prev && prev.net.total, false);
-    document.querySelectorAll('#monthTableBody tr').forEach(tr => tr.classList.toggle('active', tr.dataset.key === key));
-    const keys = datedKeys(), idx = keys.indexOf(currentKey);
-    $('prevBtn').disabled = !keys.length || idx === 0;
-    $('nextBtn').disabled = !keys.length || idx === keys.length - 1;
+
+  var teachers = [];
+  var tsh = src.getSheetByName(TEACHERS_SHEET);
+  if (tsh) {
+    var td = tsh.getDataRange().getValues();
+    for (var t = 1; t < td.length; t++) if (td[t][1]) teachers.push(String(td[t][1]).trim());
   }
-  const datedKeys = () => apiData.monthKeys.filter(k => k !== 'Undated');
-  function previousMonth(key) { const k = datedKeys(), i = k.indexOf(key); return i > 0 ? apiData.months[k[i - 1]] : null; }
-  function setChange(id, now, before, isCost) {
-    const el = $(id);
-    if (before === null || before === undefined || before === false) { el.innerHTML = ''; return; }
-    const diff = now - before;
-    if (diff === 0) { el.innerHTML = '<span class="flat">Same as last month</span>'; return; }
-    const pct = before !== 0 ? ` (${(Math.abs(diff) / Math.abs(before) * 100).toFixed(1)}%)` : '';
-    const good = isCost ? diff < 0 : diff > 0;
-    el.innerHTML = `<span class="${good ? 'up' : 'down'}">${diff > 0 ? '▲' : '▼'} ${money(Math.abs(diff))}${pct} vs last month</span>`;
-  }
-  function stepMonth(dir) {
-    const keys = datedKeys(); if (!keys.length) return;
-    let idx = keys.indexOf(currentKey);
-    if (idx === -1) idx = dir < 0 ? keys.length : -1;
-    const next = idx + dir;
-    if (next >= 0 && next < keys.length) selectPeriod(keys[next]);
-  }
-  function openFin(type) {
-    const p = getPeriod(currentKey), period = monthLabel(currentKey);
-    const row = (l, v, c) => `<div class="modal-row"><span>${l}</span><strong${c ? ` style="color:${c}"` : ''}>${money(v)}</strong></div>`;
-    let html = '';
-    if (type === 'revenue') {
-      $('finTitle').textContent = 'Revenue, ' + period;
-      html = '<div class="modal-sec">By attendance and class type</div>' + row('Online', p.revenue.online) + row('On-site', p.revenue.onsite) + row('Group classes', p.revenue.group) + row('Private classes', p.revenue.private)
-           + '<div class="modal-sec">By payment method</div>' + row('Vodafone Cash', p.revenue.vfcash) + row('Instapay', p.revenue.instapay) + row('Cash in branch', p.revenue.cash);
-    } else if (type === 'net') {
-      $('finTitle').textContent = 'Net profit, ' + period;
-      html = `<p class="sub">${currentKey === 'all' ? 'What is left in each wallet or drawer after the expenses paid from it.' : 'Money in minus money out for each wallet or drawer in this month.'}</p>`
-           + row('Vodafone Cash wallet', p.net.vfcash, colorFor(p.net.vfcash)) + row('Instapay / bank', p.net.instapay, colorFor(p.net.instapay)) + row('Cash drawer', p.net.cash, colorFor(p.net.cash)) + row('Total', p.net.total, colorFor(p.net.total));
-    } else {
-      const amount = type === 'cogs' ? p.expense.cogs : p.expense.opex;
-      const share = p.expense.total ? (amount / p.expense.total * 100).toFixed(1) + '%' : '—';
-      $('finTitle').textContent = type.toUpperCase() + ', ' + period;
-      html = row('Total ' + type.toUpperCase(), amount) + `<div class="modal-row"><span>Share of all expenses</span><strong>${share}</strong></div>`
-           + '<div class="modal-sec">All expenses by payment method</div>' + row('Vodafone Cash', p.expense.vfcash) + row('Instapay', p.expense.instapay) + row('Cash in branch', p.expense.cash)
-           + '<p class="sub" style="margin-top:12px">Line-by-line items are in the Expenses sheet.</p>';
+
+  return {
+    students: students,
+    options: {
+      courses: Object.keys(courses).sort(),
+      groups: Object.keys(groups).sort().map(function (g) { return groups[g]; }),
+      teachers: teachers,
+      methods: METHODS
     }
-    $('finModalBody').innerHTML = html;
-    openModal('finModal');
+  };
+}
+
+// ---------- تسجيل دفعة ----------
+function recordPayment_(b, me) {
+  var id = String(b.id || '').trim();
+  var amount = Number(b.amount);
+  var method = String(b.method || '').trim();
+  var modality = String(b.modality || '').trim();
+  var classType = String(b.classType || '').trim();
+
+  if (!id) throw new Error('Student ID is missing.');
+  if (!(amount > 0)) throw new Error('Enter the amount paid.');
+  if (METHODS.indexOf(method) === -1) throw new Error('Choose a payment method.');
+  if (['On-site', 'Online'].indexOf(modality) === -1) throw new Error('Choose On-site or Online.');
+  if (['Group', 'Private'].indexOf(classType) === -1) throw new Error('Choose Group or Private.');
+
+  var sh = SpreadsheetApp.openById(SOURCE_ID).getSheetByName(SOURCE_SHEET);
+  var data = sh.getDataRange().getValues();
+  var col = headerMap_(data[0]);
+  var row = findRow_(data, col['student id'], id);
+  if (!row) throw new Error('Student ' + id + ' was not found in Students and teachers.');
+
+  var name = cell_(data[row - 1], col['name']);
+  var p = parsePayment_(String(data[row - 1][col['payment']] || ''));
+  if (!p || p.status === PAID) throw new Error(name + ' is already marked as paid. Renew the student first (لم يدفع) before recording a new payment.');
+  if (amount > p.due) throw new Error('Amount ' + amount + ' is more than what ' + name + ' owes (' + p.due + ').');
+
+  var remaining = p.due - amount;
+  var newText = remaining > 0 ? ('دفع ' + amount + ' باقي ' + remaining) : ('دفع ' + amount);
+  var tz = Session.getScriptTimeZone();
+  var now = new Date();
+  var stamp = Utilities.formatDate(now, tz, 'd/M/yyyy HH:mm');
+
+  // 1) ERP: صف الدفعة، ومعه علامة الاحتساب حتى لا يُخصم مرتين
+  appendRevenue_(now, name, amount, modality, classType, method, id, 'احتُسب (من الداشبورد: ' + me.username + ') ' + stamp);
+
+  // 2) Students and teachers
+  sh.getRange(row, col['payment'] + 1).setValue(newText);
+
+  // 3) Students_Contact_Payments: Students Payments + إحصائية
+  var cfile = SpreadsheetApp.openById(CONTACT_ID);
+  var ct = cfile.getSheetByName(CONTACT_SHEET);
+  var crow = findRowIn_(ct, CONTACT_FIRST_ROW, id);
+  if (crow) {
+    ct.getRange(crow, 4).setValue(newText);
+    if (!ct.getRange(crow, 6).getValue()) ct.getRange(crow, 6).setValue(modality);
+  }
+  var st = cfile.getSheetByName(STATS_SHEET);
+  var srow = findRowIn_(st, STATS_FIRST_ROW, id);
+  if (srow) {
+    st.getRange(srow, SC.payment).setValue(newText);
+    st.getRange(srow, SC.status).setValue(remaining > 0 ? PARTIAL : PAID);
+    st.getRange(srow, SC.due).setValue(remaining);
+    st.getRange(srow, SC.method, 1, 4).setValues([['', '', modality, classType]]);
+    st.getRange(srow, SC.send).setValue(false);
+    st.getRange(srow, SC.sentAt).setValue((remaining > 0 ? 'دفعة جزئية من الداشبورد (' : 'أُرسل من الداشبورد (') + me.username + ') ' + stamp);
   }
 
-  /* =================== STUDENTS =================== */
-  let STUDENTS = [], OPTIONS = { courses: [], groups: [], teachers: [], methods: ['Cash in Branch', 'Vodafone Cash', 'Instapay'] };
-  let filter = 'owing', loaded = false, loading = null;
-  const STATUS = { unpaid: ['Not paid', 'b-unpaid'], partial: ['Partly paid', 'b-partial'], paid: ['Paid', 'b-paid'], '': ['No payment info', 'b-none'] };
+  log_(me, 'Recorded payment', id + ' ' + name + ': ' + amount + ' EGP by ' + method + ' → ' + newText);
+  return { status: 'success', data: { id: id, name: name, payment: newText, remaining: remaining } };
+}
 
-  function loadStudents(force) {
-    if (loaded && !force) return Promise.resolve();
-    if (loading) return loading;
-    if (force) $('rosterBody').innerHTML = '<tr><td colspan="6" class="loading">Loading students…</td></tr>';
-    loading = api('students').then(r => {
-      if (r.status !== 'success') { $('rosterBody').innerHTML = `<tr><td colspan="6" class="empty">${esc(r.message)}</td></tr>`; return; }
-      STUDENTS = r.data.students; OPTIONS = r.data.options; loaded = true;
-      fillOptions(); renderRoster();
-    }).catch(e => {
-      if (e.message !== 'cancelled') $('rosterBody').innerHTML = '<tr><td colspan="6" class="empty">Students did not load. Check your connection and press Refresh.</td></tr>';
-    }).finally(() => { loading = null; });
-    return loading;
-  }
+// ---------- إضافة طالب جديد (حساب على الموقع) ----------
+function createStudent_(b, me) {
+  var name = String(b.name || '').replace(/\s+/g, ' ').trim();
+  name = name.replace(/(^|\s)([a-z])/g, function (m, sp, c) { return sp + c.toUpperCase(); }); // omar ali → Omar Ali
+  var phone = normalizePhone_(b.phone);
+  var course = String(b.course || '').trim();
+  var group = String(b.group || '').trim();
+  var schedule = String(b.schedule || '').trim();
+  var teacher = String(b.teacher || '').trim();
+  var modality = String(b.modality || '').trim();
+  var classType = String(b.classType || '').trim();
+  var fee = Number(b.fee);
+  var notes = String(b.notes || '').trim();
+  var paidNow = Number(b.paidNow || 0);
+  var method = String(b.method || '').trim();
 
-  function setFilter(f) {
-    filter = f;
-    document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.f === f));
-    renderRoster();
-  }
+  if (name.split(' ').length < 2) throw new Error('Enter the student\'s full name (first and last name).');
+  if (!phone) throw new Error('Enter a valid phone number, for example 01012345678.');
+  if (!course) throw new Error('Enter the course or level.');
+  if (['On-site', 'Online'].indexOf(modality) === -1) throw new Error('Choose On-site or Online.');
+  if (['Group', 'Private'].indexOf(classType) === -1) throw new Error('Choose Group or Private.');
+  if (!(fee > 0)) throw new Error('Enter the monthly fee.');
+  if (paidNow < 0 || paidNow > fee) throw new Error('Amount paid now must be between 0 and the monthly fee.');
+  if (paidNow > 0 && METHODS.indexOf(method) === -1) throw new Error('Choose how the student paid.');
 
-  function renderRoster() {
-    const unpaid = STUDENTS.filter(s => s.status === 'unpaid'), partial = STUDENTS.filter(s => s.status === 'partial');
-    const owed = [...unpaid, ...partial].reduce((a, s) => a + (s.due || 0), 0);
-    $('tally').innerHTML = `
-      <div class="t-unpaid"><b>${unpaid.length}</b><span>not paid</span></div>
-      <div class="t-partial"><b>${partial.length}</b><span>partly paid</span></div>
-      <div><b>${money(owed)}</b><span>still to collect</span></div>
-      <div><b>${STUDENTS.length}</b><span>students in total</span></div>`;
+  var sh = SpreadsheetApp.openById(SOURCE_ID).getSheetByName(SOURCE_SHEET);
+  var data = sh.getDataRange().getValues();
+  var col = headerMap_(data[0]);
 
-    const q = $('search').value.trim().toLowerCase();
-    const order = { unpaid: 0, partial: 1, '': 2, paid: 3 };
-    let list = STUDENTS.filter(s =>
-      (filter === 'all' || (filter === 'owing' ? (s.status === 'unpaid' || s.status === 'partial') : s.status === 'paid')) &&
-      (!q || s.name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q) || s.phone.includes(q.replace(/\D/g, '') || '§')));
-    list.sort((a, b) => order[a.status] - order[b.status] || (b.due - a.due) || a.name.localeCompare(b.name));
-
-    if (!list.length) {
-      $('rosterBody').innerHTML = `<tr><td colspan="6" class="empty">${q ? 'No student matches “' + esc(q) + '”.' : filter === 'owing' ? 'Nobody owes anything right now.' : 'No students here yet.'}</td></tr>`;
-      return;
+  // رقم الهاتف مسجل لطالب آخر؟ (الإخوة قد يشتركون في رقم ولي الأمر)
+  if (!b.allowDuplicatePhone) {
+    for (var r = 1; r < data.length; r++) {
+      if (digits_(data[r][col['phone']]) === phone && data[r][col['student id']]) {
+        return { status: 'error', code: 'duplicatePhone',
+                 message: 'This phone number already belongs to ' + data[r][col['name']] + ' (' + data[r][col['student id']] + ').' };
+      }
     }
-    $('rosterBody').innerHTML = list.map(s => {
-      const st = STATUS[s.status] || STATUS[''];
-      const canPay = s.status === 'unpaid' || s.status === 'partial';
-      return `<tr class="s-${s.status || 'none'}">
-        <td class="who"><b>${esc(s.name)}</b><small>${esc(s.id)}${s.course ? ', ' + esc(s.course) : ''}<button class="to-archive" onclick="openArchive('${esc(s.id)}')">Send to archive</button></small></td>
-        <td class="c-group">${esc(s.group)}${s.modality ? '<br><small style="color:var(--muted)">' + esc(s.modality) + '</small>' : ''}</td>
-        <td class="c-phone num">${s.phone ? '+' + esc(s.phone) : '<span style="color:var(--muted)">No phone</span>'}</td>
-        <td><span class="badge ${st[1]}">${st[0]}</span><div class="payline">${esc(s.payment)}</div></td>
-        <td class="due num">${canPay ? money(s.due) : '—'}</td>
-        <td>${canPay ? `<button class="btn-pay" onclick="openPay('${esc(s.id)}')">Record payment</button>` : ''}</td>
-      </tr>`;
-    }).join('');
   }
 
-  function fillOptions() {
-    const opt = (v, sel) => `<option${v === sel ? ' selected' : ''}>${esc(v)}</option>`;
-    $('p-method').innerHTML = OPTIONS.methods.map(m => opt(m)).join('');
-    $('n-method').innerHTML = OPTIONS.methods.map(m => opt(m)).join('');
-    $('n-teacher').innerHTML = (OPTIONS.teachers.length ? OPTIONS.teachers : ['Ahmed Sehemy']).map(t => opt(t)).join('');
-    $('groupList').innerHTML = OPTIONS.groups.map(g => `<option value="${esc(g.group)}">${esc(g.course)}${g.schedule ? ', ' + esc(g.schedule) : ''}</option>`).join('');
-    $('courseList').innerHTML = OPTIONS.courses.map(c => `<option value="${esc(c)}">`).join('');
-  }
+  var slot = assignSlot_(data, col, name, {});
+  var id = slot.id, target = slot.target, lastIdRow = slot.lastIdRow;
+  var password = String(b.password || '').trim() || id;
 
-  /* ---------- payment dialog ---------- */
-  let payingId = null;
-  function setChoice(name, value) { document.querySelectorAll(`input[name="${name}"]`).forEach(i => { i.checked = i.value === value; }); }
-  const choice = name => (document.querySelector(`input[name="${name}"]:checked`) || {}).value || '';
-  function openPay(id) {
-    const s = STUDENTS.find(x => x.id === id); if (!s) return;
-    payingId = id;
-    $('payTitle').textContent = 'Record payment';
-    $('paySub').textContent = `${s.name} (${s.id})${s.group ? ', group ' + s.group : ''}`;
-    $('payOwes').textContent = money(s.due);
-    $('p-amount').value = s.due; $('p-amount').max = s.due;
-    setChoice('p-mod', s.modality || 'On-site');
-    setChoice('p-type', s.classType || 'Group');
-    $('payErr').textContent = '';
-    openModal('payModal'); setTimeout(() => $('p-amount').focus(), 50);
-  }
-  async function submitPayment(e) {
-    e.preventDefault();
-    const s = STUDENTS.find(x => x.id === payingId); if (!s) return;
-    const amount = Number($('p-amount').value);
-    if (!(amount > 0)) { $('payErr').textContent = 'Enter the amount paid.'; return; }
-    if (amount > s.due) { $('payErr').textContent = `${s.name} owes ${money(s.due)}. The amount can't be more than that.`; return; }
-    $('payBtn').disabled = true; $('payBtn').textContent = 'Recording…';
-    try {
-      const r = await api('pay', { id: s.id, amount, method: $('p-method').value, modality: choice('p-mod'), classType: choice('p-type') });
-      if (r.status !== 'success') { $('payErr').textContent = r.message; return; }
-      s.payment = r.data.payment; s.due = r.data.remaining; s.status = r.data.remaining > 0 ? 'partial' : 'paid';
-      s.modality = choice('p-mod'); s.classType = choice('p-type');
-      closeModal('payModal'); renderRoster();
-      toast(r.data.remaining > 0 ? `Payment recorded for ${s.name}. ${money(r.data.remaining)} still owed.` : `Payment recorded for ${s.name}. Fully paid.`);
-      fetchFinancials(true);
-    } catch (err) {
-      if (err.message !== 'cancelled') $('payErr').textContent = 'The payment was not recorded: the server could not be reached. Check your connection and try again.';
-    } finally { $('payBtn').disabled = false; $('payBtn').textContent = 'Record payment'; }
-  }
+  var remaining = fee - paidNow;
+  var payText = paidNow === 0 ? ('لم يدفع ' + fee)
+              : remaining > 0 ? ('دفع ' + paidNow + ' باقي ' + remaining)
+              : ('دفع ' + paidNow);
 
-  /* =================== NEW STUDENT =================== */
-  function fillFromGroup() {
-    const g = OPTIONS.groups.find(x => x.group === $('n-group').value.trim());
-    if (!g) return;
-    if (!$('n-course').value) $('n-course').value = g.course;
-    if (!$('n-schedule').value) $('n-schedule').value = g.schedule;
+  // 1) Students and teachers (هذا ما ينشئ الحساب على englishlandacademy.info)
+  var width = data[0].length;
+  var newRow = [];
+  for (var w = 0; w < width; w++) newRow.push('');
+  var put = function (h, v) { if (col[h] !== undefined) newRow[col[h]] = v; };
+  put('student id', id);
+  put('name', name);
+  put('course', course);
+  put('group', group);
+  put('schedule', schedule);
+  put('payment', payText);
+  put('teacher', teacher);
+  put('كلمة المرور', password);
+  put('phone', Number(phone));
+  if (target > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 10);
+  if (target > lastIdRow && String(sh.getRange(target, col['phone'] + 1).getValue()) !== '') { // صف فيه بيانات بدون ID
+    sh.insertRowBefore(target);
   }
-  function togglePaidMethod() { $('n-method-wrap').hidden = !(Number($('n-paid').value) > 0); }
+  sh.getRange(target, 1, 1, width).setValues([newRow]);
 
-  async function createStudent(e, allowDuplicatePhone) {
-    if (e) e.preventDefault();
-    $('newErr').textContent = '';
-    const body = {
-      name: $('n-name').value, phone: $('n-phone').value, teacher: $('n-teacher').value,
-      group: $('n-group').value, course: $('n-course').value, schedule: $('n-schedule').value,
-      modality: choice('n-mod'), classType: choice('n-type'),
-      fee: Number($('n-fee').value), paidNow: Number($('n-paid').value || 0), method: $('n-method').value,
-      password: $('n-pass').value, notes: $('n-notes').value, allowDuplicatePhone: !!allowDuplicatePhone
-    };
-    if (body.name.trim().split(/\s+/).length < 2) return fail('Enter the full name, first and last.', 'n-name');
-    if (/[^A-Za-z\s.'-]/.test(body.name)) return fail('Write the name in English letters so the login ID works.', 'n-name');
-    if (body.phone.replace(/\D/g, '').length < 10) return fail('Enter a phone number with at least 10 digits, for example 01012345678.', 'n-phone');
-    if (!body.course.trim()) return fail('Enter the course or level.', 'n-course');
-    if (!(body.fee > 0)) return fail('Enter the monthly fee.', 'n-fee');
-    if (body.paidNow < 0 || body.paidNow > body.fee) return fail('Paid now must be between 0 and the monthly fee.', 'n-paid');
+  // 2) Students_Contact_Payments: Students Payments (ID، الاسم، الهاتف، الدفع، الملاحظات، Modality، قيمة التجديد)
+  var ct = SpreadsheetApp.openById(CONTACT_ID).getSheetByName(CONTACT_SHEET);
+  var crow = lastIdRowIn_(ct, CONTACT_FIRST_ROW) + 1;
+  ct.getRange(crow, 3).setNumberFormat('@');
+  ct.getRange(crow, 1, 1, 7).setValues([[id, name, '+' + phone, payText, notes, modality, fee]]);
+  ct.getRange(crow, 1, 1, 7)
+    .setBorder(true, true, true, true, true, true, '#BFBFBF', SpreadsheetApp.BorderStyle.SOLID)
+    .setFontFamily('Arial').setFontSize(11);
 
-    $('createBtn').disabled = true; $('createBtn').textContent = 'Creating…';
-    try {
-      const r = await api('createStudent', body);
-      if (r.status !== 'success') {
-        if (r.code === 'duplicatePhone') {
-          $('newErr').innerHTML = esc(r.message) + ' <button type="button" class="btn btn-ghost" style="padding:4px 10px;margin-left:6px" onclick="createStudent(null, true)">Create anyway (siblings)</button>';
-        } else $('newErr').textContent = r.message;
-        return;
-      }
-      const d = r.data;
-      $('newResult').innerHTML = `<div class="result">
-        <h3>${esc(d.name)} is registered</h3>
-        <dl class="creds num"><dt>Login ID</dt><dd>${esc(d.id)}</dd><dt>Password</dt><dd>${esc(d.password)}</dd><dt>Payment</dt><dd dir="auto">${esc(d.payment)}</dd></dl>
-        <p style="margin:0 0 10px">They can sign in at englishlandacademy.info now. Send them these details.</p>
-        <button type="button" class="btn btn-ghost" onclick="copyCreds('${esc(d.id)}','${esc(d.password)}')">Copy login details</button>
-      </div>`;
-      ['n-name', 'n-phone', 'n-pass', 'n-notes'].forEach(id => $(id).value = '');
-      $('n-paid').value = 0; togglePaidMethod();
-      toast(`${d.name} is registered as ${d.id}.`);
-      loaded = false; loadStudents(true);
-      if (body.paidNow > 0) fetchFinancials(true);
-    } catch (err) {
-      if (err.message !== 'cancelled') $('newErr').textContent = 'The student was not created: the server could not be reached. Check your connection and try again.';
-    } finally { $('createBtn').disabled = false; $('createBtn').textContent = 'Create student'; }
+  // 3) ERP: إذا دفع الآن
+  if (paidNow > 0) {
+    var now = new Date();
+    appendRevenue_(now, name, paidNow, modality, classType, method, id,
+      'احتُسب (تسجيل طالب جديد: ' + me.username + ') ' + Utilities.formatDate(now, Session.getScriptTimeZone(), 'd/M/yyyy HH:mm'));
   }
-  function fail(msg, field) { $('newErr').textContent = msg; if (field) $(field).focus(); }
-  function copyCreds(id, pass) {
-    const text = `English Land Academy\nWebsite: englishlandacademy.info\nID: ${id}\nPassword: ${pass}`;
-    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => toast('Login details copied.'), () => toast('Copy did not work. Select the details and copy them by hand.'));
-  }
+  // تبويب "إحصائية" يضيف الطالب تلقائياً في المزامنة التالية (خلال 5 دقائق) إذا كان عليه مبلغ
 
-  /* =================== EXPENSES =================== */
-  let EXP = [], EXP_TYPES = {}, expLoaded = false;
-  const todayStr = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
-  async function loadExpenses() {
-    $('expBody').innerHTML = '<tr><td colspan="6" class="loading">Loading expenses…</td></tr>';
-    try {
-      const r = await api('expenses');
-      if (r.status !== 'success') { $('expBody').innerHTML = `<tr><td colspan="6" class="empty">${esc(r.message)}</td></tr>`; return; }
-      EXP = r.data.items; EXP_TYPES = r.data.types; expLoaded = true;
-      const keepSub = $('x-sub').value;
-      $('x-sub').innerHTML = '<option value="">Choose a type</option>' + Object.keys(EXP_TYPES).map(t => `<option${t === keepSub ? ' selected' : ''}>${esc(t)}</option>`).join('');
-      const keepM = $('x-method').value;
-      $('x-method').innerHTML = r.data.methods.map(m => `<option${m === keepM ? ' selected' : ''}>${esc(m)}</option>`).join('');
-      $('itemList').innerHTML = [...new Set(EXP.map(e => e.item).filter(Boolean))].slice(0, 80).map(i => `<option value="${esc(i)}">`).join('');
-      if (isAdmin()) {
-        const months = [...new Set(EXP.map(e => e.month))].sort().reverse();
-        const keep = $('x-month').value;
-        $('x-month').innerHTML = '<option value="all">All months</option>' + months.map(m => `<option value="${m}">${m === 'Undated' ? 'Undated' : monthLabel(m)}</option>`).join('');
-        $('x-month').value = keep && (keep === 'all' || months.includes(keep)) ? keep : (months[0] || 'all');
-      }
-      $('expLead').textContent = isAdmin()
-        ? 'Record money paid out. It goes straight to the Expenses sheet in ERP and into the finance numbers.'
-        : 'Record money paid out. It goes straight to the Expenses sheet. You see the expenses you added in the last 45 days.';
-      renderExpenses();
-    } catch (e) { if (e.message !== 'cancelled') $('expBody').innerHTML = '<tr><td colspan="6" class="empty">Expenses did not load. Check your connection and press Refresh.</td></tr>'; }
-  }
-  function renderExpenses() {
-    const m = isAdmin() ? $('x-month').value : 'all';
-    const list = EXP.filter(e => m === 'all' || e.month === m);
-    if (isAdmin()) {
-      const sum = c => list.filter(e => !c || e.category === c).reduce((a, e) => a + e.amount, 0);
-      $('expTally').innerHTML = `<div><b>${money(sum())}</b><span>total ${m === 'all' ? 'all time' : 'in ' + monthLabel(m)}</span></div><div><b>${money(sum('COGS'))}</b><span>COGS</span></div><div><b>${money(sum('OPEX'))}</b><span>OPEX</span></div>`;
-    }
-    if (!list.length) { $('expBody').innerHTML = `<tr><td colspan="6" class="empty">${isAdmin() ? 'No expenses in this month.' : 'You haven\'t added any expenses yet. Use the form to add one.'}</td></tr>`; return; }
-    $('expBody').innerHTML = list.map(e => `<tr>
-      <td class="num" style="white-space:nowrap">${esc(e.date)}</td>
-      <td class="who"><b>${esc(e.item)}</b>${e.by ? `<small>Added by ${esc(e.by)}</small>` : ''}</td>
-      <td><span class="tag ${e.category === 'COGS' ? 'cogs' : 'opex'}">${esc(e.category || '—')}</span> ${esc(e.sub)}</td>
-      <td>${esc(e.method)}</td>
-      <td class="amt num">${money(e.amount)}</td>
-      <td>${isAdmin() ? `<button class="mini warn" onclick="deleteExpense(${EXP.indexOf(e)})">Delete</button>` : ''}</td>
-    </tr>`).join('');
-  }
-  function syncCategory() { const c = EXP_TYPES[$('x-sub').value]; if (c) setChoice('x-cat', c); }
-  async function addExpense(e, allowDuplicate) {
-    if (e) e.preventDefault();
-    const body = { item: $('x-item').value.trim(), amount: Number($('x-amount').value), date: $('x-date').value,
-                   sub: $('x-sub').value, category: choice('x-cat'), method: $('x-method').value, allowDuplicate: !!allowDuplicate };
-    const err = m => { $('x-err').textContent = m; };
-    if (!body.item) return err('Write what the money was for.');
-    if (!(body.amount > 0)) return err('Enter the amount.');
-    if (!body.date) return err('Choose the date.');
-    if (body.date > todayStr()) return err("The date can't be in the future.");
-    if (!body.sub) return err('Choose the type of expense.');
-    $('x-btn').disabled = true; $('x-btn').textContent = 'Adding…'; err('');
-    try {
-      const r = await api('addExpense', body);
-      if (r.status !== 'success') {
-        if (r.code === 'duplicate') $('x-err').innerHTML = esc(r.message) + ' <button type="button" class="btn btn-ghost" style="padding:4px 10px;margin-left:6px" onclick="addExpense(null, true)">Add it again</button>';
-        else err(r.message);
-        return;
-      }
-      toast(`Expense added: ${body.item}, ${money(body.amount)}.`);
-      $('x-item').value = ''; $('x-amount').value = '';
-      loadExpenses();
-      if (isAdmin()) fetchFinancials(true);
-    } catch (ex) { if (ex.message !== 'cancelled') err('The expense was not added: the server could not be reached. Try again.'); }
-    finally { $('x-btn').disabled = false; $('x-btn').textContent = 'Add expense'; }
-  }
-  async function deleteExpense(i) {
-    const x = EXP[i]; if (!x) return;
-    if (!confirm(`Delete the expense "${x.item}" (${money(x.amount)})? This removes it from the Expenses sheet.`)) return;
-    try {
-      const r = await api('deleteExpense', { row: x.row, item: x.item, amount: x.amount });
-      if (r.status !== 'success') { toast(r.message); return; }
-      toast('Expense deleted.'); loadExpenses(); fetchFinancials(true);
-    } catch (e) { if (e.message !== 'cancelled') toast('The expense was not deleted: the server could not be reached.'); }
-  }
+  log_(me, 'Registered student', id + ' ' + name + ', ' + course + ', ' + payText);
+  return { status: 'success', data: { id: id, password: password, name: name, payment: payText } };
+}
 
-  /* =================== ARCHIVE =================== */
-  let archivingId = null, ARCHIVE = [];
-  function openArchive(id) {
-    const s = STUDENTS.find(x => x.id === id); if (!s) return;
-    archivingId = id;
-    $('arTitle').textContent = 'Send ' + s.name + ' to the archive';
-    $('arSub').textContent = `${s.id}${s.course ? ', ' + s.course : ''}${s.group ? ', group ' + s.group : ''}`;
-    $('arWarn').innerHTML = 'Their account on englishlandacademy.info will be deleted, and they will be removed from the payment lists and the monthly renewal.'
-      + ((s.status === 'unpaid' || s.status === 'partial') && s.due ? ` <b>They still owe ${money(s.due)}.</b> This amount is saved in the archive.` : '');
-    $('ar-reason').selectedIndex = 0; $('ar-level').value = ''; $('ar-notes').value = ''; $('ar-err').textContent = '';
-    openModal('archModal'); setTimeout(() => $('ar-level').focus(), 50);
-  }
-  async function submitArchive(e) {
-    e.preventDefault();
-    const s = STUDENTS.find(x => x.id === archivingId); if (!s) return;
-    const level = $('ar-level').value.trim();
-    if (!level) { $('ar-err').textContent = "Write the student's level before archiving."; $('ar-level').focus(); return; }
-    $('ar-btn').disabled = true; $('ar-btn').textContent = 'Archiving…';
-    try {
-      const r = await api('archive', { id: s.id, reason: $('ar-reason').value, level, notes: $('ar-notes').value.trim() });
-      if (r.status !== 'success') { $('ar-err').textContent = r.message; return; }
-      STUDENTS = STUDENTS.filter(x => x.id !== s.id);
-      closeModal('archModal'); renderRoster();
-      toast(`${s.name} is archived and their account is deleted.`);
-      archLoaded = false;
-    } catch (err) { if (err.message !== 'cancelled') $('ar-err').textContent = 'The student was not archived: the server could not be reached. Try again.'; }
-    finally { $('ar-btn').disabled = false; $('ar-btn').textContent = 'Archive and delete account'; }
-  }
-  let archLoaded = false;
-  async function loadArchive() {
-    $('archList').innerHTML = '<p class="loading">Loading the archive…</p>';
-    try {
-      const r = await api('listArchive');
-      if (r.status !== 'success') { $('archList').innerHTML = `<p class="empty">${esc(r.message)}</p>`; return; }
-      ARCHIVE = r.data.reverse(); archLoaded = true; renderArchive();
-    } catch (e) { if (e.message !== 'cancelled') $('archList').innerHTML = '<p class="empty">The archive did not load. Check your connection and press Refresh.</p>'; }
-  }
-  function renderArchive() {
-    const q = $('archSearch').value.trim().toLowerCase();
-    const list = ARCHIVE.filter(a => !q || a.name.toLowerCase().includes(q) || a.id.toLowerCase().includes(q) || a.phone.replace(/\D/g, '').includes(q.replace(/\D/g, '') || '§'));
-    if (!list.length) { $('archList').innerHTML = `<p class="empty">${q ? 'No archived student matches “' + esc(q) + '”.' : 'Nobody is archived yet. Use “Send to archive” beside a student\'s name when they stop.'}</p>`; return; }
-    $('archList').innerHTML = list.map(a => `<article class="arch${a.restored ? ' restored' : ''}">
-      <div><h3>${esc(a.name)}</h3><div class="meta">${esc(a.id)}${a.course ? ', ' + esc(a.course) : ''}${a.group ? ', group ' + esc(a.group) : ''}${a.phone ? ', ' + esc(a.phone) : ''}</div>
-      <div class="meta">Archived ${esc(a.date)} by ${esc(a.by)}${a.restored ? '. ' + esc(a.restored) : ''}</div></div>
-      <div>${isAdmin() && !a.restored ? `<button class="mini" onclick="restoreStudent(${a.row}, '${esc(a.id)}', '${esc(a.name)}')">Restore</button>` : ''}</div>
-      <dl>
-        <dt>Reason</dt><dd>${esc(a.reason) || '—'}</dd>
-        <dt>Level</dt><dd>${esc(a.level)}</dd>
-        ${a.notes ? `<dt>Notes</dt><dd>${esc(a.notes)}</dd>` : ''}
-        ${a.earlier ? `<dt>Earlier notes</dt><dd>${esc(a.earlier)}</dd>` : ''}
-        ${a.owed ? `<dt>Still owed</dt><dd class="owed num">${money(a.owed)}</dd>` : ''}
-      </dl></article>`).join('');
-  }
-  async function restoreStudent(row, id, name) {
-    if (!confirm(`Restore ${name}? They get a new account with a new ID (not ${id}) and return to the payment lists. Their old payments stay under ${id}.`)) return;
-    try {
-      const r = await api('restore', { row, id });
-      if (r.status !== 'success') { toast(r.message); return; }
-      alert(`${name} is back.\n\nNew login ID: ${r.data.id}\nPassword: ${r.data.password}\nPayment: ${r.data.payment}\n\nSend them the new login details.`);
-      loaded = false; loadArchive();
-    } catch (e) { if (e.message !== 'cancelled') toast('The student was not restored: the server could not be reached.'); }
-  }
+// ===================================================================
+//  المصروفات
+// ===================================================================
+// نوع المصروف → التصنيف الرئيسي الافتراضي (يمكن تغييره في النموذج)
+var EXPENSE_TYPES = {
+  'Instructor Salary': 'COGS', 'Refund': 'COGS', 'Materials': 'COGS',
+  'Operation Salary': 'OPEX', 'Sales & Marketing': 'OPEX', 'Rent': 'OPEX', 'AI & Tech': 'OPEX',
+  'Utilities': 'OPEX', 'Supplies': 'OPEX', 'Other': 'OPEX'
+};
+var EXP_BY_COL = 7; // العمود H: Recorded by
 
-  /* =================== TEAM (admin) =================== */
-  let PEOPLE = [];
-  const when = iso => iso ? new Date(iso).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Never';
-  async function loadUsers() {
-    try {
-      const r = await api('listUsers');
-      if (r.status !== 'success') { $('peopleBody').innerHTML = `<tr><td colspan="4" class="empty">${esc(r.message)}</td></tr>`; return; }
-      PEOPLE = r.data; renderPeople();
-    } catch (e) { if (e.message !== 'cancelled') $('peopleBody').innerHTML = '<tr><td colspan="4" class="empty">Accounts did not load. Check your connection.</td></tr>'; }
-  }
-  function renderPeople() {
-    $('peopleBody').innerHTML = PEOPLE.map(p => {
-      const self = ME && p.username === ME.username;
-      return `<tr class="${p.active ? '' : 'off'}">
-        <td class="who"><b>${esc(p.name)}${self ? ' (you)' : ''}</b><small>${esc(p.username)}${p.active ? '' : ', turned off'}</small></td>
-        <td><span class="role ${p.role}">${p.role === 'admin' ? 'Admin' : 'Employee'}</span></td>
-        <td>${when(p.lastLogin)}</td>
-        <td><div class="acts">
-          <button class="mini" onclick="openReset('${esc(p.username)}')">New password</button>
-          ${self ? '' : `<button class="mini" onclick="setRole('${esc(p.username)}','${p.role === 'admin' ? 'employee' : 'admin'}')">${p.role === 'admin' ? 'Make employee' : 'Make admin'}</button>
-          <button class="mini ${p.active ? 'warn' : ''}" onclick="setActive('${esc(p.username)}',${!p.active})">${p.active ? 'Turn off' : 'Turn on'}</button>`}
-        </div></td></tr>`;
-    }).join('') || '<tr><td colspan="4" class="empty">No accounts yet.</td></tr>';
-  }
-  async function createUser(e) {
-    e.preventDefault();
-    const name = $('u-name').value.trim(), username = $('u-user').value.trim().toLowerCase(), password = $('u-pass').value, role = choice('u-role');
-    if (!name) { $('u-err').textContent = 'Enter their full name.'; return; }
-    if (!/^[a-z0-9._-]{3,30}$/.test(username)) { $('u-err').textContent = 'Username: 3 to 30 English letters or numbers, no spaces.'; return; }
-    if (password.length < 8) { $('u-err').textContent = 'The password needs at least 8 characters.'; return; }
-    $('u-btn').disabled = true; $('u-err').textContent = '';
-    try {
-      const r = await api('createUser', { name, username, password, role });
-      if (r.status !== 'success') { $('u-err').textContent = r.message; return; }
-      ['u-name', 'u-user', 'u-pass'].forEach(id => $(id).value = '');
-      toast(`Account added. ${name} signs in as "${username}".`);
-      loadUsers();
-    } catch (err) { if (err.message !== 'cancelled') $('u-err').textContent = 'The server could not be reached. Try again.'; }
-    finally { $('u-btn').disabled = false; }
-  }
-  async function updateUser(data, okMsg) {
-    try {
-      const r = await api('updateUser', data);
-      if (r.status !== 'success') { toast(r.message); return false; }
-      toast(okMsg); loadUsers(); return true;
-    } catch (err) { if (err.message !== 'cancelled') toast('The server could not be reached. Try again.'); return false; }
-  }
-  function setActive(u, active) {
-    const q = active ? `Turn ${u}'s account back on?` : `Turn off ${u}'s account? They will be signed out right away and can't sign in until you turn it back on.`;
-    if (!confirm(q)) return;
-    updateUser({ username: u, active }, active ? `${u} can sign in again.` : `${u} is turned off and signed out.`);
-  }
-  function setRole(u, role) {
-    if (!confirm(role === 'admin' ? `Make ${u} an admin? Admins see Finance, Team and the Excel report.` : `Make ${u} an employee? They will lose access to Finance, Team and the report.`)) return;
-    updateUser({ username: u, role }, `${u} is now ${role === 'admin' ? 'an admin' : 'an employee'}.`);
-  }
-  let resetting = null;
-  function openReset(u) { resetting = u; $('rsSub').textContent = 'For ' + u; $('rs-pass').value = ''; $('rs-err').textContent = ''; openModal('resetModal'); setTimeout(() => $('rs-pass').focus(), 50); }
-  async function resetPassword(e) {
-    e.preventDefault();
-    const p = $('rs-pass').value;
-    if (p.length < 8) { $('rs-err').textContent = 'The password needs at least 8 characters.'; return; }
-    $('rs-btn').disabled = true;
-    const ok = await updateUser({ username: resetting, password: p }, `New password set for ${resetting}.`);
-    $('rs-btn').disabled = false;
-    if (ok) { closeModal('resetModal'); if (ME && resetting === ME.username) endSession('Password changed. Sign in with your new password.'); }
-  }
+function expenseSheet_() {
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Expenses');
+  if (String(sh.getRange(1, EXP_BY_COL + 1).getValue()).trim() === '') sh.getRange(1, EXP_BY_COL + 1).setValue('Recorded by');
+  return sh;
+}
 
-  /* =================== EXCEL REPORT (admin) =================== */
-  function loadXLSX() {
-    if (window.XLSX) return Promise.resolve();
-    return new Promise((res, rej) => {
-      const sc = document.createElement('script');
-      sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-      sc.onload = res; sc.onerror = () => rej(new Error('lib'));
-      document.head.appendChild(sc);
+function listExpenses_(me) {
+  var sh = expenseSheet_();
+  var tz = Session.getScriptTimeZone();
+  var data = sh.getDataRange().getValues();
+  var types = {};
+  Object.keys(EXPENSE_TYPES).forEach(function (k) { types[k] = EXPENSE_TYPES[k]; });
+  var items = [];
+  var since = new Date(Date.now() - 45 * 864e5);
+  for (var r = 1; r < data.length; r++) {
+    var row = data[r];
+    var amt = toNumber(row[EXP_AMT_COL]);
+    if (!amt && !row[1]) continue;
+    var sub = String(row[4] || '').trim();
+    if (sub && !types[sub]) types[sub] = String(row[EXP_CAT_COL] || 'OPEX').trim().toUpperCase() === 'COGS' ? 'COGS' : 'OPEX';
+    var d = toDate_(row[DATE_COL]);
+    var by = String(row[EXP_BY_COL] || '').trim();
+    // الموظف يرى ما سجّله هو فقط خلال آخر 45 يوماً (حتى لا تظهر الرواتب لغير المدير)
+    if (me.role !== 'admin' && (by !== me.username || (d && d < since))) continue;
+    items.push({
+      row: r + 1,
+      date: d ? Utilities.formatDate(d, tz, 'yyyy-MM-dd') : String(row[DATE_COL] || ''),
+      month: d ? Utilities.formatDate(d, tz, 'yyyy-MM') : 'Undated',
+      item: String(row[1] || ''), amount: amt,
+      category: String(row[EXP_CAT_COL] || '').trim().toUpperCase(), sub: sub,
+      method: String(row[EXP_PAY_COL] || '').trim(), by: by
     });
   }
-  async function downloadReport() {
-    const btn = $('reportBtn'); btn.disabled = true; btn.textContent = 'Preparing report…';
-    try {
-      const [r] = await Promise.all([api('report'), loadXLSX()]);
-      if (r.status !== 'success') { toast(r.message); return; }
-      const d = r.data, f = d.finance, wb = XLSX.utils.book_new();
-      const add = (name, rows, widths) => {
-        const ws = XLSX.utils.aoa_to_sheet(rows.length ? rows : [['No data']]);
-        if (widths) ws['!cols'] = widths.map(w => ({ wch: w }));
-        XLSX.utils.book_append_sheet(wb, ws, name);
-      };
-      const label = { unpaid: 'Not paid', partial: 'Partly paid', paid: 'Paid', '': '' };
-      const unpaid = d.students.filter(s => s.status === 'unpaid'), partial = d.students.filter(s => s.status === 'partial');
-      const sum = list => list.reduce((a, s) => a + (s.due || 0), 0);
-      const dated = f.monthKeys.filter(k => k !== 'Undated'), latest = dated[dated.length - 1], m = latest ? f.months[latest] : null;
+  return { items: items.reverse(), types: types, methods: METHODS };
+}
 
-      add('Summary', [
-        ['English Land Academy report'], ['Generated', d.generated], [],
-        ['Students', 'Count', 'Amount (EGP)'],
-        ['Total students', d.students.length],
-        ['Not paid', unpaid.length, sum(unpaid)],
-        ['Partly paid', partial.length, sum(partial)],
-        ['Still to collect (EGP)', '', sum(unpaid) + sum(partial)], [],
-        ['Finance', latest ? monthLabel(latest) : '', 'All time'],
-        ['Revenue (EGP)', m ? m.revenue.total : '', f.allTime.revenue.total],
-        ['COGS (EGP)', m ? m.expense.cogs : '', f.allTime.expense.cogs],
-        ['OPEX (EGP)', m ? m.expense.opex : '', f.allTime.expense.opex],
-        ['Net profit (EGP)', m ? m.net.total : '', f.allTime.net.total], [],
-        ['Balance by wallet (all time)'],
-        ['Vodafone Cash', '', f.allTime.net.vfcash], ['Instapay / bank', '', f.allTime.net.instapay], ['Cash drawer', '', f.allTime.net.cash]
-      ], [30, 18, 16]);
+function addExpense_(b, me) {
+  var item = String(b.item || '').replace(/\s+/g, ' ').trim();
+  var amount = Number(b.amount);
+  var sub = String(b.sub || '').trim();
+  var cat = String(b.category || '').trim().toUpperCase();
+  var method = String(b.method || '').trim();
+  var tz = Session.getScriptTimeZone();
+  var d = b.date ? toDate_(String(b.date)) : new Date();
+  if (!item) throw new Error('Write what the money was for.');
+  if (!(amount > 0)) throw new Error('Enter the amount.');
+  if (!sub) throw new Error('Choose the type of expense.');
+  if (cat !== 'COGS' && cat !== 'OPEX') throw new Error('Choose COGS or OPEX.');
+  if (METHODS.indexOf(method) === -1) throw new Error('Choose how it was paid.');
+  if (!d) throw new Error('The date is not valid.');
+  var today = new Date(); today.setHours(23, 59, 59, 999);
+  if (d > today) throw new Error('The date can\'t be in the future.');
+  d = new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
-      const sHead = ['Student ID', 'Name', 'Course', 'Group', 'Schedule', 'Teacher', 'Phone', 'Attends', 'Class type', 'Monthly fee', 'Payment', 'Status', 'Owes (EGP)', 'Notes'];
-      const sRow = s => [s.id, s.name, s.course, s.group, s.schedule, s.teacher, s.phone ? '+' + s.phone : '', s.modality, s.classType, s.fee, s.payment, label[s.status] || '', s.due || 0, s.notes];
-      const widths = [14, 26, 12, 16, 30, 16, 16, 10, 10, 11, 22, 12, 11, 40];
-      add('Students', [sHead, ...d.students.map(sRow)], widths);
-      add('Owing', [sHead, ...[...unpaid, ...partial].sort((a, b) => b.due - a.due).map(sRow)], widths);
-
-      add('Monthly', [['Month', 'Revenue', 'COGS', 'OPEX', 'Net profit', 'Margin %', 'Vodafone Cash in', 'Instapay in', 'Cash in', 'Online', 'On-site', 'Group', 'Private'],
-        ...[...f.monthKeys].reverse().map(k => { const p = f.months[k]; return [monthLabel(k), p.revenue.total, p.expense.cogs, p.expense.opex, p.net.total,
-          p.revenue.total ? +(p.net.total / p.revenue.total * 100).toFixed(1) : '', p.revenue.vfcash, p.revenue.instapay, p.revenue.cash, p.revenue.online, p.revenue.onsite, p.revenue.group, p.revenue.private]; }),
-        ['All time', f.allTime.revenue.total, f.allTime.expense.cogs, f.allTime.expense.opex, f.allTime.net.total, '', f.allTime.revenue.vfcash, f.allTime.revenue.instapay, f.allTime.revenue.cash, f.allTime.revenue.online, f.allTime.revenue.onsite, f.allTime.revenue.group, f.allTime.revenue.private]
-      ], [18, 12, 10, 10, 12, 10, 16, 12, 10, 10, 10, 10, 10]);
-      add('Revenues', d.revenues, [16, 26, 10, 10, 10, 16, 12, 14, 40]);
-      add('Expenses', d.expenses, [16, 26, 10, 10, 16, 16, 12, 30]);
-      add('Archive', d.archive || [], [16, 14, 24, 16, 12, 12, 10, 16, 10, 10, 20, 12, 20, 40, 40, 30, 12, 26]);
-      add('Activity log', d.log, [18, 14, 24, 60]);
-      add('Team', [['Username', 'Name', 'Role', 'Account', 'Created', 'Last sign-in'],
-        ...d.users.map(u => [u.username, u.name, u.role, u.active ? 'On' : 'Off', (u.created || '').slice(0, 10), u.lastLogin ? when(u.lastLogin) : 'Never'])], [16, 24, 10, 8, 12, 18]);
-
-      XLSX.writeFile(wb, `English_Land_Report_${d.generated.slice(0, 10)}.xlsx`);
-      toast('Report downloaded.');
-    } catch (err) {
-      if (err.message === 'lib') toast('The Excel tool did not load. Check your internet connection and try again.');
-      else if (err.message !== 'cancelled') toast('The report did not download. Check your connection and try again.');
-    } finally { btn.disabled = false; btn.textContent = 'Download Excel report'; }
+  var sh = expenseSheet_();
+  var data = sh.getDataRange().getValues();
+  if (!b.allowDuplicate) {
+    var dayKey = Utilities.formatDate(d, tz, 'yyyy-MM-dd');
+    for (var r = 1; r < data.length; r++) {
+      var rd = toDate_(data[r][DATE_COL]);
+      if (rd && Utilities.formatDate(rd, tz, 'yyyy-MM-dd') === dayKey &&
+          toNumber(data[r][EXP_AMT_COL]) === amount &&
+          String(data[r][1] || '').trim().toLowerCase() === item.toLowerCase()) {
+        return { status: 'error', code: 'duplicate', message: 'The same expense (' + item + ', ' + amount + ' EGP) is already recorded on this date.' };
+      }
+    }
   }
 
-  /* =================== start =================== */
-  (async function boot() {
-    if (!TOKEN) return showSignin('');
-    try {
-      const r = await post({ action: 'me', token: TOKEN });
-      if (r.status === 'success') startApp(r.data); else endSession('');
-    } catch (e) { showSignin('The server could not be reached. Check your connection and try again.'); }
-  })();
-</script>
-</body>
-</html>
+  var target = sh.getLastRow() + 1;
+  var rng = sh.getRange(target, 1, 1, EXP_BY_COL + 1);
+  rng.setNumberFormats([['dd/MM/yyyy', '@', '0', '@', '@', '@', '@', '@']]);
+  rng.setValues([[d, item, amount, cat, sub, method, Utilities.formatDate(d, tz, 'MM/yyyy'), me.username]]);
+  log_(me, 'Added expense', item + ': ' + amount + ' EGP, ' + cat + ' / ' + sub + ', ' + method);
+  return { status: 'success', data: { row: target } };
+}
+
+function deleteExpense_(b, me) {
+  var sh = expenseSheet_();
+  var row = Number(b.row);
+  if (!(row >= 2) || row > sh.getLastRow()) throw new Error('Expense not found. Refresh and try again.');
+  var v = sh.getRange(row, 1, 1, EXP_BY_COL + 1).getValues()[0];
+  // نتأكد أن الصف هو نفسه الذي رآه المدير (لو تغيّر ترتيب الصفوف)
+  if (String(v[1] || '').trim() !== String(b.item || '').trim() || toNumber(v[EXP_AMT_COL]) !== Number(b.amount)) {
+    throw new Error('The expenses list changed. Refresh and try again.');
+  }
+  sh.deleteRow(row);
+  log_(me, 'Deleted expense', v[1] + ': ' + v[EXP_AMT_COL] + ' EGP (' + v[4] + ', ' + v[EXP_PAY_COL] + ')');
+  return { status: 'success' };
+}
+
+function toDate_(v) {
+  if (v instanceof Date && !isNaN(v.getTime())) return v;
+  var s = String(v == null ? '' : v).trim();
+  if (!s) return null;
+  var m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return null;
+}
+
+// ===================================================================
+//  اختيار الصف والـID لطالب جديد أو مُستعاد
+// ===================================================================
+// أولاً أول صف فارغ بين الطلاب (برقم مكانه)، وإلا بعد آخر طالب برقم جديد.
+// avoidNums: أرقام لا تُستخدم (مثل الرقم القديم لطالب مُستعاد)
+function assignSlot_(data, col, name, avoidNums) {
+  var numOf = function (i) {
+    var m = String(data[i][col['student id']] || '').trim().match(/(\d+)$/);
+    return m && Number(m[1]) < 10000 ? Number(m[1]) : null;
+  };
+  var rowEmpty = function (i) {
+    return data[i].every(function (v) { return v === '' || v === null; });
+  };
+  var maxNum = 100, lastIdRow = 1;
+  for (var i = 1; i < data.length; i++) {
+    if (!String(data[i][col['student id']] || '').trim()) continue;
+    lastIdRow = i + 1;
+    var n0 = numOf(i);
+    if (n0 && n0 > maxNum) maxNum = n0;
+  }
+  var first = name.split(' ')[0].replace(/[^A-Za-z]/g, '');
+  if (!first) first = 'Student';
+  first = first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+
+  // كل الـIDs المستخدمة (الطلاب + دفعات ERP) حتى لا يتكرر ID قديم
+  var used = {};
+  for (var u = 1; u < data.length; u++) {
+    var x = String(data[u][col['student id']] || '').trim().toLowerCase();
+    if (x) used[x] = true;
+  }
+  listArchive_().forEach(function (x) { used[String(x.id).toLowerCase()] = true; });  // ID الطالب المؤرشف نفسه محجوز (رقمه يمكن استخدامه باسم آخر)
+  var rev = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Revenues').getDataRange().getValues();
+  for (var q = 1; q < rev.length; q++) {
+    var y = String(rev[q][7] || '').trim().toLowerCase();
+    if (y) used[y] = true;
+  }
+
+  var usedNums = {};                                   // أرقام مستخدمة في أي ID طالب حالي
+  Object.keys(avoidNums || {}).forEach(function (k) { usedNums[k] = true; });
+  for (var w2 = 1; w2 < data.length; w2++) { var nn = numOf(w2); if (nn) usedNums[nn] = true; }
+  var target = 0, num = 0;
+  for (var g = 1; g < lastIdRow - 1; g++) {            // صفوف داخل القائمة فقط (قبل آخر طالب)
+    if (!rowEmpty(g)) continue;
+    // رقم الخانة حسب مكانها: الطالب التالي ناقص عدد الصفوف بينهما (فراغ بين 146 و150 → 147، 148، 149)
+    var next = null, nextRow = 0;
+    for (var z = g + 1; z < data.length; z++) { next = numOf(z); if (next !== null) { nextRow = z; break; } }
+    var cand = next !== null ? next - (nextRow - g) : null;
+    if (cand && cand > 100 && !usedNums[cand] && !used[(first + cand).toLowerCase()]) num = cand;
+    else num = maxNum + 1;
+    target = g + 1;
+    break;
+  }
+  if (!target) {                                       // لا يوجد صف فارغ: بعد آخر طالب
+    num = maxNum + 1;
+    target = lastIdRow + 1;
+  }
+  while (used[(first + num).toLowerCase()] || usedNums[num]) num++;
+  return { id: first + num, num: num, target: target, lastIdRow: lastIdRow };
+}
+
+// ===================================================================
+//  الأرشيف: الطلاب الذين توقفوا أو تركوا الكورس
+// ===================================================================
+var ARCHIVE_HEAD = ['Archived on', 'Student ID', 'Name', 'Phone', 'Course', 'Group', 'Schedule', 'Teacher',
+  'Attends', 'Monthly fee', 'Last payment', 'Owed when archived (EGP)', 'Reason', 'Level', 'Notes',
+  'Earlier notes', 'Archived by', 'Restored', 'Saved data (do not edit)'];
+var AR = { date: 0, id: 1, name: 2, phone: 3, course: 4, group: 5, schedule: 6, teacher: 7, modality: 8, fee: 9,
+  payment: 10, owed: 11, reason: 12, level: 13, notes: 14, earlier: 15, by: 16, restored: 17, raw: 18 };
+
+function archiveSheet_() {
+  var ss = SpreadsheetApp.openById(SOURCE_ID);
+  var sh = ss.getSheetByName(ARCHIVE_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(ARCHIVE_SHEET);
+    sh.getRange(1, 1, 1, ARCHIVE_HEAD.length).setValues([ARCHIVE_HEAD])
+      .setFontWeight('bold').setBackground('#1F3864').setFontColor('#FFFFFF');
+    sh.setFrozenRows(1);
+    sh.setColumnWidths(1, ARCHIVE_HEAD.length, 130);
+    sh.setColumnWidth(AR.level + 1, 220); sh.setColumnWidth(AR.notes + 1, 320);
+    sh.hideColumns(AR.raw + 1);
+  }
+  return sh;
+}
+
+function archiveStudent_(b, me) {
+  var id = String(b.id || '').trim();
+  var reason = String(b.reason || '').trim();
+  var level = String(b.level || '').trim();
+  var notes = String(b.notes || '').trim();
+  if (!id) throw new Error('Student ID is missing.');
+  if (!level) throw new Error('Write the student\'s level before archiving.');
+
+  var src = SpreadsheetApp.openById(SOURCE_ID).getSheetByName(SOURCE_SHEET);
+  var data = src.getDataRange().getValues();
+  var head = data[0];
+  var col = headerMap_(head);
+  var row = findRow_(data, col['student id'], id);
+  if (!row) throw new Error('Student ' + id + ' was not found. They may already be archived.');
+  var r = data[row - 1];
+  var name = cell_(r, col['name']);
+  var payText = cell_(r, col['payment']);
+  var p = parsePayment_(payText) || { status: '', due: 0 };
+  var c = contactInfo_()[id.toLowerCase()] || {};
+
+  // نحفظ الصف كاملاً (للاسترجاع لاحقاً إذا لزم)
+  var raw = {};
+  head.forEach(function (h, i) {
+    var v = r[i];
+    if (String(h).trim() !== '') raw[String(h).trim()] = v instanceof Date ? v.toISOString() : v;
+  });
+
+  var tz = Session.getScriptTimeZone();
+  var now = new Date();
+  var arch = archiveSheet_();
+  var line = [];
+  line[AR.date] = now;
+  line[AR.id] = id; line[AR.name] = name;
+  line[AR.phone] = digits_(r[col['phone']]) ? '+' + digits_(r[col['phone']]) : '';
+  line[AR.course] = cell_(r, col['course']); line[AR.group] = cell_(r, col['group']);
+  line[AR.schedule] = cell_(r, col['schedule']); line[AR.teacher] = cell_(r, col['teacher']);
+  line[AR.modality] = c.modality || ''; line[AR.fee] = c.fee || '';
+  line[AR.payment] = payText; line[AR.owed] = p.status === PAID ? 0 : (p.due || 0);
+  line[AR.reason] = reason; line[AR.level] = level; line[AR.notes] = notes;
+  line[AR.earlier] = c.notes || ''; line[AR.by] = me.username; line[AR.restored] = '';
+  line[AR.raw] = JSON.stringify(raw);
+  var target = arch.getLastRow() + 1;
+  arch.getRange(target, 4).setNumberFormat('@');
+  arch.getRange(target, 1, 1, ARCHIVE_HEAD.length).setValues([line]);
+  arch.getRange(target, 1).setNumberFormat('d/M/yyyy HH:mm');
+
+  // 1) حذف الحساب: نمسح صف الطالب في Students and teachers (التنسيق يبقى، والصف الفارغ يُستخدم لطالب جديد)
+  src.getRange(row, 1, 1, head.length).clearContent();
+
+  // 2) إزالته من Students Payments ومن الإحصائية (حتى لا يُجدد ولا يُحسب عليه مستحقات)
+  var cfile = SpreadsheetApp.openById(CONTACT_ID);
+  var ct = cfile.getSheetByName(CONTACT_SHEET);
+  var crow = findRowIn_(ct, CONTACT_FIRST_ROW, id);
+  if (crow) ct.deleteRow(crow);
+  var st = cfile.getSheetByName(STATS_SHEET);
+  var srow = findRowIn_(st, STATS_FIRST_ROW, id);
+  if (srow) st.getRange(srow, 1, 1, SC.sentAt).clearContent();
+
+  log_(me, 'Archived student', id + ' ' + name + (reason ? ' (' + reason + ')' : '') +
+    (line[AR.owed] ? ', still owed ' + line[AR.owed] + ' EGP' : ''));
+  return { status: 'success', data: { id: id, name: name, owed: line[AR.owed] } };
+}
+
+function listArchive_() {
+  var sh = SpreadsheetApp.openById(SOURCE_ID).getSheetByName(ARCHIVE_SHEET);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var tz = Session.getScriptTimeZone();
+  var v = sh.getRange(2, 1, sh.getLastRow() - 1, ARCHIVE_HEAD.length).getValues();
+  var out = [];
+  v.forEach(function (r, i) {
+    if (!String(r[AR.id] || '').trim()) return;
+    out.push({
+      row: i + 2,
+      date: r[AR.date] instanceof Date ? Utilities.formatDate(r[AR.date], tz, 'yyyy-MM-dd HH:mm') : String(r[AR.date]),
+      id: String(r[AR.id]).trim(), name: String(r[AR.name] || ''), phone: String(r[AR.phone] || ''),
+      course: String(r[AR.course] || ''), group: String(r[AR.group] || ''), teacher: String(r[AR.teacher] || ''),
+      modality: String(r[AR.modality] || ''), payment: String(r[AR.payment] || ''), owed: Number(r[AR.owed]) || 0,
+      reason: String(r[AR.reason] || ''), level: String(r[AR.level] || ''), notes: String(r[AR.notes] || ''),
+      earlier: String(r[AR.earlier] || ''), by: String(r[AR.by] || ''), restored: String(r[AR.restored] || '')
+    });
+  });
+  return out;
+}
+
+function archiveRowsForReport_() {
+  var list = listArchive_();
+  return [ARCHIVE_HEAD.slice(0, AR.raw)].concat(list.map(function (x) {
+    return [x.date, x.id, x.name, x.phone, x.course, x.group, '', x.teacher, x.modality, '', x.payment, x.owed,
+            x.reason, x.level, x.notes, x.earlier, x.by, x.restored];
+  }));
+}
+
+// للمدير: إرجاع طالب من الأرشيف بـID جديد (رقم مختلف عن رقمه القديم) وبنفس باقي بياناته
+function restoreStudent_(b, me) {
+  var arch = archiveSheet_();
+  var rowNum = Number(b.row);
+  if (!(rowNum >= 2) || rowNum > arch.getLastRow()) throw new Error('Archive entry not found. Refresh and try again.');
+  var r = arch.getRange(rowNum, 1, 1, ARCHIVE_HEAD.length).getValues()[0];
+  var oldId = String(r[AR.id] || '').trim();
+  if (!oldId || (b.id && String(b.id).trim() !== oldId)) throw new Error('The archive changed. Refresh and try again.');
+  if (r[AR.restored]) throw new Error(oldId + ' was already restored.');
+  var raw = {};
+  try { raw = JSON.parse(r[AR.raw] || '{}'); } catch (err) { throw new Error('The saved data for ' + oldId + ' is damaged. Add the student again from New student.'); }
+
+  var src = SpreadsheetApp.openById(SOURCE_ID).getSheetByName(SOURCE_SHEET);
+  var data = src.getDataRange().getValues();
+  var head = data[0];
+  var col = headerMap_(head);
+
+  // ID جديد: رقم مختلف عن القديم، في أول صف فارغ أو بعد آخر طالب
+  var avoid = {};
+  var om = oldId.match(/(\d+)$/);
+  if (om) avoid[Number(om[1])] = true;
+  var name = String(raw['Name'] || r[AR.name] || '').trim();
+  var slot = assignSlot_(data, col, name, avoid);
+  var id = slot.id;
+  if (slot.target > src.getMaxRows()) src.insertRowsAfter(src.getMaxRows(), 10);
+
+  // كلمة المرور: إذا كانت هي الـID القديم تصبح الـID الجديد، وإلا تبقى كما هي
+  var oldPass = String(raw['كلمة المرور'] || '').trim();
+  var password = !oldPass || oldPass.toLowerCase() === oldId.toLowerCase() ? id : oldPass;
+  // الدفع: إذا كان عليه مبلغ عند الأرشفة يبقى كما هو، وإلا يبدأ "لم يدفع" بقيمة اشتراكه الشهري
+  var owed = Number(r[AR.owed]) || 0, fee = Number(r[AR.fee]) || 0;
+  var payText = owed > 0 ? String(raw['Payment'] || '') : (fee ? 'لم يدفع ' + fee : String(raw['Payment'] || ''));
+
+  var newRow = head.map(function (h) { var k = String(h).trim(); return k && raw[k] !== undefined ? raw[k] : ''; });
+  newRow[col['student id']] = id;
+  if (col['كلمة المرور'] !== undefined) newRow[col['كلمة المرور']] = password;
+  newRow[col['payment']] = payText;
+  src.getRange(slot.target, 1, 1, head.length).setValues([newRow]);
+
+  var ct = SpreadsheetApp.openById(CONTACT_ID).getSheetByName(CONTACT_SHEET);
+  var crow = lastIdRowIn_(ct, CONTACT_FIRST_ROW) + 1;
+  ct.getRange(crow, 3).setNumberFormat('@');
+  var note = String(r[AR.earlier] || '');
+  note = (note ? note + ' | ' : '') + 'Returned from archive (was ' + oldId + ')';
+  ct.getRange(crow, 1, 1, 7).setValues([[id, r[AR.name], r[AR.phone], payText, note, r[AR.modality], r[AR.fee]]]);
+
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'd/M/yyyy HH:mm');
+  arch.getRange(rowNum, AR.restored + 1).setValue('Restored as ' + id + ' on ' + stamp + ' by ' + me.username);
+  log_(me, 'Restored student', oldId + ' → ' + id + ' ' + r[AR.name]);
+  return { status: 'success', data: { oldId: oldId, id: id, password: password, name: String(r[AR.name]), payment: payText } };
+}
+
+// ===================================================================
+//  أدوات مساعدة
+// ===================================================================
+function appendRevenue_(date, name, amount, modality, classType, method, id, ledgerMark) {
+  var erp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Revenues');
+  var target = erp.getRange(erp.getLastRow() + 1, 1, 1, 9);
+  target.setNumberFormats([['d/M/yyyy', '@', '0', '@', '@', '@', 'MM-yyyy', '@', '@']]);
+  target.setValues([[
+    new Date(date.getFullYear(), date.getMonth(), date.getDate()),
+    name, amount, modality, classType, method,
+    new Date(date.getFullYear(), date.getMonth(), 1),
+    id, ledgerMark
+  ]]);
+}
+
+function contactInfo_() {
+  var ct = SpreadsheetApp.openById(CONTACT_ID).getSheetByName(CONTACT_SHEET);
+  var n = Math.max(ct.getLastRow() - CONTACT_FIRST_ROW + 1, 1);
+  var v = ct.getRange(CONTACT_FIRST_ROW, 1, n, 7).getValues();
+  var out = {};
+  v.forEach(function (r) {
+    var k = String(r[0] || '').trim().toLowerCase();
+    if (k) out[k] = { notes: String(r[4] || ''), modality: String(r[5] || '').trim(), fee: r[6] };
+  });
+  return out;
+}
+
+function statsInfo_() {
+  var st = SpreadsheetApp.openById(CONTACT_ID).getSheetByName(STATS_SHEET);
+  var v = st.getRange(STATS_FIRST_ROW, 1, STATS_LAST_ROW - STATS_FIRST_ROW + 1, SC.classType).getValues();
+  var out = {};
+  v.forEach(function (r) {
+    var k = String(r[0] || '').trim().toLowerCase();
+    if (k) out[k] = { modality: String(r[SC.modality - 1] || '').trim(), classType: String(r[SC.classType - 1] || '').trim() };
+  });
+  return out;
+}
+
+function headerMap_(head) {
+  var m = {};
+  head.forEach(function (h, i) { var k = String(h).trim().toLowerCase(); if (k && m[k] === undefined) m[k] = i; });
+  ['student id', 'name', 'payment', 'phone'].forEach(function (k) {
+    if (m[k] === undefined) throw new Error('Column "' + k + '" was not found in Students and teachers.');
+  });
+  return m;
+}
+
+function cell_(row, i) { return i === undefined ? '' : String(row[i] == null ? '' : row[i]).trim(); }
+
+function findRow_(data, idCol, id) {
+  var key = String(id).trim().toLowerCase();
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][idCol] || '').trim().toLowerCase() === key) return r + 1;
+  }
+  return 0;
+}
+
+function findRowIn_(sheet, firstRow, id) {
+  var n = Math.max(sheet.getLastRow() - firstRow + 1, 1);
+  var ids = sheet.getRange(firstRow, 1, n, 1).getValues();
+  var key = String(id).trim().toLowerCase();
+  for (var i = 0; i < ids.length; i++) {
+    if (String(ids[i][0] || '').trim().toLowerCase() === key) return firstRow + i;
+  }
+  return 0;
+}
+
+function lastIdRowIn_(sheet, firstRow) {
+  var n = Math.max(sheet.getLastRow() - firstRow + 1, 1);
+  var ids = sheet.getRange(firstRow, 1, n, 1).getValues();
+  var last = firstRow - 1;
+  for (var i = 0; i < ids.length; i++) if (String(ids[i][0] || '').trim()) last = firstRow + i;
+  return last;
+}
+
+// "لم يدفع 600" / "دفع 600 باقي 1400" / "دفع 600" / "عرض" / "هدية"
+function parsePayment_(text) {
+  var s = String(text || '').trim();
+  if (!s) return null;
+  var rem = s.match(/باق[ىي]\s*(\d+)/);
+  if (/لم\s*يدفع/.test(s)) {
+    var first = s.match(/\d+/);
+    return { status: UNPAID, due: rem ? Number(rem[1]) : (first ? Number(first[0]) : 0) };
+  }
+  if (rem) return { status: PARTIAL, due: Number(rem[1]) };
+  return { status: PAID, due: 0 };
+}
+
+function digits_(v) { return String(v == null ? '' : v).replace(/\D/g, ''); }
+
+// 01012345678 → 201012345678 ، ويقبل الأرقام الدولية كما هي
+function normalizePhone_(v) {
+  var d = digits_(v);
+  if (/^00/.test(d)) d = d.slice(2);
+  if (/^01\d{9}$/.test(d)) d = '2' + d;
+  return d.length >= 10 && d.length <= 15 ? d : '';
+}
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+// ---------- الداشبورد المالي ----------
+function newBucket() {
+  return {
+    revenue: { total: 0, online: 0, onsite: 0, group: 0, private: 0, vfcash: 0, instapay: 0, cash: 0 },
+    expense: { total: 0, cogs: 0, opex: 0, vfcash: 0, instapay: 0, cash: 0 },
+    net: { total: 0, vfcash: 0, instapay: 0, cash: 0 }
+  };
+}
+
+function addRevenue(b, row, amt) {
+  var mod  = norm(row[REV_MOD_COL]);
+  var type = norm(row[REV_TYPE_COL]);
+  var pay  = payKey(row[REV_PAY_COL]);
+  var r = b.revenue;
+  r.total += amt;
+  if (mod === "online") r.online += amt;
+  if (mod === "on-site" || mod === "onsite" || mod === "on site") r.onsite += amt;
+  if (type === "group") r.group += amt;
+  if (type === "private") r.private += amt;
+  if (pay) r[pay] += amt;
+}
+
+function addExpense(b, row, amt) {
+  var cat = norm(row[EXP_CAT_COL]);
+  var pay = payKey(row[EXP_PAY_COL]);
+  var x = b.expense;
+  x.total += amt;
+  if (cat === "cogs") x.cogs += amt;
+  if (cat === "opex") x.opex += amt;
+  if (pay) x[pay] += amt;
+}
+
+function payKey(v) {
+  var s = norm(v);
+  if (!s) return null;
+  if (s.indexOf("insta") !== -1 || s.indexOf("انستا") !== -1) return "instapay";
+  if (s.indexOf("vodafone") !== -1 || s.indexOf("wallet") !== -1 ||
+      s.indexOf("فودافون") !== -1 || s.indexOf("محفظ") !== -1) return "vfcash";
+  if (s.indexOf("cash") !== -1 || s.indexOf("drawer") !== -1 ||
+      s.indexOf("كاش") !== -1 || s.indexOf("نقد") !== -1) return "cash";
+  return null;
+}
+
+function norm(v) {
+  return String(v == null ? "" : v)
+    .replace(/[\u200B-\u200F\u202A-\u202E\u00A0]/g, " ")
+    .replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function calcNet(b) {
+  b.net.total    = b.revenue.total    - b.expense.total;
+  b.net.vfcash   = b.revenue.vfcash   - b.expense.vfcash;
+  b.net.instapay = b.revenue.instapay - b.expense.instapay;
+  b.net.cash     = b.revenue.cash     - b.expense.cash;
+}
+
+function toNumber(v) {
+  if (typeof v === "number") return v;
+  return parseFloat(String(v).replace(/,/g, "")) || 0;
+}
+
+function monthKey(v, tz) {
+  var d = null;
+  if (v instanceof Date && !isNaN(v.getTime())) d = v;
+  else if (v !== "" && v != null) {
+    var s = String(v).trim();
+    var m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+    if (m) d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+    else { var parsed = new Date(s); if (!isNaN(parsed.getTime())) d = parsed; }
+  }
+  return d ? Utilities.formatDate(d, tz, "yyyy-MM") : "Undated";
+}
