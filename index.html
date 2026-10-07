@@ -320,7 +320,7 @@
         <button aria-pressed="true" data-f="owing" onclick="setFilter('owing')">Owing</button>
         <button aria-pressed="false" data-f="paid" onclick="setFilter('paid')">Paid</button>
       </div>
-      <button class="refresh" onclick="loadStudents(true)">Refresh</button>
+      <button class="refresh" onclick="loadStudents(true, true)">Refresh</button>
     </div>
     <div class="roster">
       <div class="roster-wrap">
@@ -548,16 +548,29 @@
   // POST first. If the browser loses the request on Google's redirect (common when the browser is
   // signed in to more than one Google account), the server answers code "get" and we resend as GET.
   let useGet = false;
-  try { useGet = sessionStorage.getItem('el_get') === '1'; } catch (e) {}
+  try { useGet = localStorage.getItem('el_get') === '1'; } catch (e) {}   // remembered on this computer
+  // One request ID per action, kept until it succeeds. Pressing the button again after a failure
+  // sends the SAME ID, so the server never saves the same thing twice.
+  const RID = {};
+  const newId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+    : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  const rid = key => RID[key] || (RID[key] = newId());
+  const ridDone = key => { delete RID[key]; };
+  const UNSURE = "We couldn't confirm this was saved (the connection dropped). Press the button again: it is safe and will not be added twice.";
+  async function readJson(res) {
+    const t = await res.text();
+    try { return JSON.parse(t); } catch (e) { throw new Error('network'); }
+  }
+
   async function post(body) {
     const payload = JSON.stringify(body);
     if (!useGet) {
-      const r = await (await fetch(API_URL, { method: 'POST', body: payload })).json();
+      const r = await readJson(await fetch(API_URL, { method: 'POST', body: payload }));
       if (r.code !== 'get') return r;
-      useGet = true; try { sessionStorage.setItem('el_get', '1'); } catch (e) {}
+      useGet = true; try { localStorage.setItem('el_get', '1'); } catch (e) {}
     }
     const sep = API_URL.includes('?') ? '&' : '?';
-    return (await fetch(API_URL + sep + 'p=' + encodeURIComponent(payload))).json();
+    return readJson(await fetch(API_URL + sep + 'p=' + encodeURIComponent(payload)));
   }
   async function api(action, data) {
     const r = await post(Object.assign({ action, token: TOKEN }, data || {}));
@@ -573,6 +586,7 @@
   function endSession(msg) {
     TOKEN = ''; ME = null; try { sessionStorage.removeItem('el_token'); } catch (e) {}
     STUDENTS = []; loaded = false; finLoaded = false;
+    try { sessionStorage.removeItem('el_students'); } catch (e) {}
     showSignin(msg);
   }
   async function signIn(e) {
@@ -601,6 +615,8 @@
       + (isAdmin() ? '<button class="report" id="reportBtn" onclick="downloadReport()">Download Excel report</button>' : '')
       + '<button onclick="openPw()">Change password</button><button onclick="signOut()">Sign out</button>';
     showTab(isAdmin() ? 'finance' : 'students');
+    // Load the other data in the background so the tabs open instantly
+    loadStudents(false).catch(() => {});
   }
 
   /* ---------- change own password ---------- */
@@ -743,13 +759,22 @@
   let filter = 'owing', loaded = false, loading = null;
   const STATUS = { unpaid: ['Not paid', 'b-unpaid'], partial: ['Partly paid', 'b-partial'], paid: ['Paid', 'b-paid'], '': ['No payment info', 'b-none'] };
 
-  function loadStudents(force) {
+  // force: reload the list. hard (Refresh button): also skip the server's 1-minute copy.
+  function loadStudents(force, hard) {
     if (loaded && !force) return Promise.resolve();
     if (loading) return loading;
-    if (force) $('rosterBody').innerHTML = '<tr><td colspan="6" class="loading">Loading students…</td></tr>';
-    loading = api('students').then(r => {
+    // Show the last list straight away (from this tab) while the fresh one loads
+    if (!loaded && !STUDENTS.length) {
+      try {
+        const saved = JSON.parse(sessionStorage.getItem('el_students') || 'null');
+        if (saved) { STUDENTS = saved.students; OPTIONS = saved.options; fillOptions(); renderRoster(); }
+      } catch (e) {}
+    }
+    if (hard) $('rosterBody').innerHTML = '<tr><td colspan="6" class="loading">Loading students…</td></tr>';
+    loading = api('students', hard ? { force: true } : {}).then(r => {
       if (r.status !== 'success') { $('rosterBody').innerHTML = `<tr><td colspan="6" class="empty">${esc(r.message)}</td></tr>`; return; }
       STUDENTS = r.data.students; OPTIONS = r.data.options; loaded = true;
+      try { sessionStorage.setItem('el_students', JSON.stringify(r.data)); } catch (e) {}
       fillOptions(); renderRoster();
     }).catch(e => {
       if (e.message !== 'cancelled') $('rosterBody').innerHTML = '<tr><td colspan="6" class="empty">Students did not load. Check your connection and press Refresh.</td></tr>';
@@ -822,23 +847,29 @@
     $('payErr').textContent = '';
     openModal('payModal'); setTimeout(() => $('p-amount').focus(), 50);
   }
-  async function submitPayment(e) {
-    e.preventDefault();
+  async function submitPayment(e, allowRepeat) {
+    if (e) e.preventDefault();
     const s = STUDENTS.find(x => x.id === payingId); if (!s) return;
     const amount = Number($('p-amount').value);
     if (!(amount > 0)) { $('payErr').textContent = 'Enter the amount paid.'; return; }
     if (amount > s.due) { $('payErr').textContent = `${s.name} owes ${money(s.due)}. The amount can't be more than that.`; return; }
     $('payBtn').disabled = true; $('payBtn').textContent = 'Recording…';
     try {
-      const r = await api('pay', { id: s.id, amount, method: $('p-method').value, modality: choice('p-mod'), classType: choice('p-type') });
-      if (r.status !== 'success') { $('payErr').textContent = r.message; return; }
+      const key = 'pay_' + s.id + '_' + amount;
+      const r = await api('pay', { id: s.id, amount, method: $('p-method').value, modality: choice('p-mod'), classType: choice('p-type'), allowRepeat: !!allowRepeat, requestId: rid(key) });
+      if (r.status !== 'success') {
+        if (r.code === 'repeatPayment') $('payErr').innerHTML = esc(r.message) + ' If this is really a second payment, <button type="button" class="btn btn-ghost" style="padding:4px 10px" onclick="submitPayment(null, true)">record it again</button>';
+        else $('payErr').textContent = r.message;
+        return;
+      }
+      ridDone(key);
       s.payment = r.data.payment; s.due = r.data.remaining; s.status = r.data.remaining > 0 ? 'partial' : 'paid';
       s.modality = choice('p-mod'); s.classType = choice('p-type');
       closeModal('payModal'); renderRoster();
-      toast(r.data.remaining > 0 ? `Payment recorded for ${s.name}. ${money(r.data.remaining)} still owed.` : `Payment recorded for ${s.name}. Fully paid.`);
+      toast((r.repeated ? 'Already saved earlier, nothing was added twice. ' : '') + (r.data.remaining > 0 ? `Payment recorded for ${s.name}. ${money(r.data.remaining)} still owed.` : `Payment recorded for ${s.name}. Fully paid.`));
       fetchFinancials(true);
     } catch (err) {
-      if (err.message !== 'cancelled') $('payErr').textContent = 'The payment was not recorded: the server could not be reached. Check your connection and try again.';
+      if (err.message !== 'cancelled') $('payErr').textContent = UNSURE;
     } finally { $('payBtn').disabled = false; $('payBtn').textContent = 'Record payment'; }
   }
 
@@ -851,7 +882,7 @@
   }
   function togglePaidMethod() { $('n-method-wrap').hidden = !(Number($('n-paid').value) > 0); }
 
-  async function createStudent(e, allowDuplicatePhone) {
+  async function createStudent(e, allowDuplicatePhone, allowDuplicateName) {
     if (e) e.preventDefault();
     $('newErr').textContent = '';
     const body = {
@@ -859,7 +890,8 @@
       group: $('n-group').value, course: $('n-course').value, schedule: $('n-schedule').value,
       modality: choice('n-mod'), classType: choice('n-type'),
       fee: Number($('n-fee').value), paidNow: Number($('n-paid').value || 0), method: $('n-method').value,
-      password: $('n-pass').value, notes: $('n-notes').value, allowDuplicatePhone: !!allowDuplicatePhone
+      password: $('n-pass').value, notes: $('n-notes').value,
+      allowDuplicatePhone: !!allowDuplicatePhone, allowDuplicateName: !!allowDuplicateName, requestId: rid('newStudent')
     };
     if (body.name.trim().split(/\s+/).length < 2) return fail('Enter the full name, first and last.', 'n-name');
     if (/[^A-Za-z\s.'-]/.test(body.name)) return fail('Write the name in English letters so the login ID works.', 'n-name');
@@ -873,13 +905,16 @@
       const r = await api('createStudent', body);
       if (r.status !== 'success') {
         if (r.code === 'duplicatePhone') {
-          $('newErr').innerHTML = esc(r.message) + ' <button type="button" class="btn btn-ghost" style="padding:4px 10px;margin-left:6px" onclick="createStudent(null, true)">Create anyway (siblings)</button>';
+          $('newErr').innerHTML = esc(r.message) + ' <button type="button" class="btn btn-ghost" style="padding:4px 10px;margin-left:6px" onclick="createStudent(null, true, ' + !!allowDuplicateName + ')">Create anyway (siblings)</button>';
+        } else if (r.code === 'duplicateName') {
+          $('newErr').innerHTML = esc(r.message) + ' <button type="button" class="btn btn-ghost" style="padding:4px 10px;margin-left:6px" onclick="createStudent(null, ' + !!allowDuplicatePhone + ', true)">It\'s a different person with the same name</button>';
         } else $('newErr').textContent = r.message;
         return;
       }
+      ridDone('newStudent');
       const d = r.data;
       $('newResult').innerHTML = `<div class="result">
-        <h3>${esc(d.name)} is registered</h3>
+        <h3>${esc(d.name)} is registered${r.repeated ? ' (already saved earlier, no duplicate was made)' : ''}</h3>
         <dl class="creds num"><dt>Login ID</dt><dd>${esc(d.id)}</dd><dt>Password</dt><dd>${esc(d.password)}</dd><dt>Payment</dt><dd dir="auto">${esc(d.payment)}</dd></dl>
         <p style="margin:0 0 10px">They can sign in at englishlandacademy.info now. Send them these details.</p>
         <button type="button" class="btn btn-ghost" onclick="copyCreds('${esc(d.id)}','${esc(d.password)}')">Copy login details</button>
@@ -890,10 +925,13 @@
       loaded = false; loadStudents(true);
       if (body.paidNow > 0) fetchFinancials(true);
     } catch (err) {
-      if (err.message !== 'cancelled') $('newErr').textContent = 'The student was not created: the server could not be reached. Check your connection and try again.';
+      if (err.message !== 'cancelled') $('newErr').textContent = UNSURE;
     } finally { $('createBtn').disabled = false; $('createBtn').textContent = 'Create student'; }
   }
   function fail(msg, field) { $('newErr').textContent = msg; if (field) $(field).focus(); }
+  // Only the name/phone change what is being created. Changing them means a different student.
+  ['n-name', 'n-phone'].forEach(id => $(id).addEventListener('input', () => ridDone('newStudent')));
+  ['x-item', 'x-amount', 'x-date'].forEach(id => $(id).addEventListener('input', () => ridDone('expense')));
   function copyCreds(id, pass) {
     const text = `English Land Academy\nWebsite: englishlandacademy.info\nID: ${id}\nPassword: ${pass}`;
     (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => toast('Login details copied.'), () => toast('Copy did not work. Select the details and copy them by hand.'));
@@ -946,7 +984,7 @@
   async function addExpense(e, allowDuplicate) {
     if (e) e.preventDefault();
     const body = { item: $('x-item').value.trim(), amount: Number($('x-amount').value), date: $('x-date').value,
-                   sub: $('x-sub').value, category: choice('x-cat'), method: $('x-method').value, allowDuplicate: !!allowDuplicate };
+                   sub: $('x-sub').value, category: choice('x-cat'), method: $('x-method').value, allowDuplicate: !!allowDuplicate, requestId: rid('expense') };
     const err = m => { $('x-err').textContent = m; };
     if (!body.item) return err('Write what the money was for.');
     if (!(body.amount > 0)) return err('Enter the amount.');
@@ -961,21 +999,22 @@
         else err(r.message);
         return;
       }
+      ridDone('expense');
       toast(`Expense added: ${body.item}, ${money(body.amount)}.`);
       $('x-item').value = ''; $('x-amount').value = '';
       loadExpenses();
       if (isAdmin()) fetchFinancials(true);
-    } catch (ex) { if (ex.message !== 'cancelled') err('The expense was not added: the server could not be reached. Try again.'); }
+    } catch (ex) { if (ex.message !== 'cancelled') err(UNSURE); }
     finally { $('x-btn').disabled = false; $('x-btn').textContent = 'Add expense'; }
   }
   async function deleteExpense(i) {
     const x = EXP[i]; if (!x) return;
     if (!confirm(`Delete the expense "${x.item}" (${money(x.amount)})? This removes it from the Expenses sheet.`)) return;
     try {
-      const r = await api('deleteExpense', { row: x.row, item: x.item, amount: x.amount });
+      const r = await api('deleteExpense', { row: x.row, item: x.item, amount: x.amount, requestId: rid('delExp_' + x.row + '_' + x.amount) });
       if (r.status !== 'success') { toast(r.message); return; }
       toast('Expense deleted.'); loadExpenses(); fetchFinancials(true);
-    } catch (e) { if (e.message !== 'cancelled') toast('The expense was not deleted: the server could not be reached.'); }
+    } catch (e) { if (e.message !== 'cancelled') toast(UNSURE); }
   }
 
   /* =================== ARCHIVE =================== */
@@ -997,13 +1036,14 @@
     if (!level) { $('ar-err').textContent = "Write the student's level before archiving."; $('ar-level').focus(); return; }
     $('ar-btn').disabled = true; $('ar-btn').textContent = 'Archiving…';
     try {
-      const r = await api('archive', { id: s.id, reason: $('ar-reason').value, level, notes: $('ar-notes').value.trim() });
+      const r = await api('archive', { id: s.id, reason: $('ar-reason').value, level, notes: $('ar-notes').value.trim(), requestId: rid('arch_' + s.id) });
       if (r.status !== 'success') { $('ar-err').textContent = r.message; return; }
+      ridDone('arch_' + s.id);
       STUDENTS = STUDENTS.filter(x => x.id !== s.id);
       closeModal('archModal'); renderRoster();
       toast(`${s.name} is archived and their account is deleted.`);
       archLoaded = false;
-    } catch (err) { if (err.message !== 'cancelled') $('ar-err').textContent = 'The student was not archived: the server could not be reached. Try again.'; }
+    } catch (err) { if (err.message !== 'cancelled') $('ar-err').textContent = UNSURE; }
     finally { $('ar-btn').disabled = false; $('ar-btn').textContent = 'Archive and delete account'; }
   }
   let archLoaded = false;
@@ -1034,11 +1074,12 @@
   async function restoreStudent(row, id, name) {
     if (!confirm(`Restore ${name}? They get a new account with a new ID (not ${id}) and return to the payment lists. Their old payments stay under ${id}.`)) return;
     try {
-      const r = await api('restore', { row, id });
+      const r = await api('restore', { row, id, requestId: rid('restore_' + row + '_' + id) });
       if (r.status !== 'success') { toast(r.message); return; }
+      ridDone('restore_' + row + '_' + id);
       alert(`${name} is back.\n\nNew login ID: ${r.data.id}\nPassword: ${r.data.password}\nPayment: ${r.data.payment}\n\nSend them the new login details.`);
       loaded = false; loadArchive();
-    } catch (e) { if (e.message !== 'cancelled') toast('The student was not restored: the server could not be reached.'); }
+    } catch (e) { if (e.message !== 'cancelled') toast(UNSURE); }
   }
 
   /* =================== TEAM (admin) =================== */
@@ -1073,12 +1114,13 @@
     if (password.length < 8) { $('u-err').textContent = 'The password needs at least 8 characters.'; return; }
     $('u-btn').disabled = true; $('u-err').textContent = '';
     try {
-      const r = await api('createUser', { name, username, password, role });
+      const r = await api('createUser', { name, username, password, role, requestId: rid('user_' + username) });
       if (r.status !== 'success') { $('u-err').textContent = r.message; return; }
+      ridDone('user_' + username);
       ['u-name', 'u-user', 'u-pass'].forEach(id => $(id).value = '');
       toast(`Account added. ${name} signs in as "${username}".`);
       loadUsers();
-    } catch (err) { if (err.message !== 'cancelled') $('u-err').textContent = 'The server could not be reached. Try again.'; }
+    } catch (err) { if (err.message !== 'cancelled') $('u-err').textContent = UNSURE; }
     finally { $('u-btn').disabled = false; }
   }
   async function updateUser(data, okMsg) {
