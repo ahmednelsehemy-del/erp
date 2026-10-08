@@ -147,6 +147,18 @@
   .btn-pay { border: 1px solid var(--entry); color: var(--entry); background: var(--surface); border-radius: var(--radius-s); padding: 6px 12px; cursor: pointer; font-weight: 600; white-space: nowrap; }
   .btn-pay:hover { background: var(--entry-soft); }
   .empty { padding: 36px 20px; text-align: center; color: var(--ink-soft); }
+  #panel-students .roster, #panel-students .roster-wrap { overflow: visible; }
+  .who b.who-name { display: inline-block; }
+  .who small { display: block; }
+  .who-name { position: relative; display: inline-block; cursor: help; border-bottom: 1px dashed #B8C3D3; }
+  .login-card { position: absolute; left: 0; top: calc(100% + 6px); z-index: 30; min-width: 250px; background: var(--ink); color: #fff;
+    border-radius: var(--radius-m); padding: 12px 14px; box-shadow: 0 10px 24px rgba(27,43,75,.28); font-weight: 400; font-size: .88rem; display: none; cursor: default; }
+  .login-card::before { content: ''; position: absolute; left: 0; right: 0; top: -8px; height: 8px; }  /* keeps hover alive across the gap */
+  .who-name:hover .login-card, .who-name:focus-within .login-card, .who-name.open .login-card { display: block; }
+  .login-card dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0 0 10px; }
+  .login-card dt { color: #B9C3D6; } .login-card dd { margin: 0; font-weight: 700; font-family: ui-monospace, Consolas, monospace; user-select: all; }
+  .login-card button { background: var(--entry); color: #fff; border: 0; border-radius: var(--radius-s); padding: 6px 10px; font-weight: 600; cursor: pointer; width: 100%; }
+  .login-card button:hover { background: #A94A0D; }
   .to-archive { background: none; border: 0; padding: 0; margin-left: 8px; color: var(--muted); font-size: .8rem; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
   .to-archive:hover { color: var(--unpaid); }
   .btn-danger { background: var(--unpaid); color: #fff; }
@@ -782,6 +794,10 @@
     return loading;
   }
 
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.who-name')) document.querySelectorAll('.who-name.open').forEach(x => x.classList.remove('open'));
+  });
+
   function setFilter(f) {
     filter = f;
     document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.f === f));
@@ -812,7 +828,10 @@
       const st = STATUS[s.status] || STATUS[''];
       const canPay = s.status === 'unpaid' || s.status === 'partial';
       return `<tr class="s-${s.status || 'none'}">
-        <td class="who"><b>${esc(s.name)}</b><small>${esc(s.id)}${s.course ? ', ' + esc(s.course) : ''}<button class="to-archive" onclick="openArchive('${esc(s.id)}')">Send to archive</button></small></td>
+        <td class="who"><b class="who-name" tabindex="0" onclick="this.classList.toggle('open')">${esc(s.name)}<span class="login-card" onclick="event.stopPropagation()">
+          <dl><dt>Login ID</dt><dd>${esc(s.id)}</dd><dt>Password</dt><dd>${s.password ? esc(s.password) : '<span style="color:#B9C3D6;font-weight:400">not set</span>'}</dd><dt>Website</dt><dd style="user-select:text;font-family:inherit;font-weight:500">englishlandacademy.info</dd></dl>
+          <button type="button" onclick="copyStudentLogin('${esc(s.id)}')">Copy login details</button>
+        </span></b><small>${esc(s.id)}${s.course ? ', ' + esc(s.course) : ''}<button class="to-archive" onclick="openArchive('${esc(s.id)}')">Send to archive</button></small></td>
         <td class="c-group">${esc(s.group)}${s.modality ? '<br><small style="color:var(--muted)">' + esc(s.modality) + '</small>' : ''}</td>
         <td class="c-phone num">${s.phone ? '+' + esc(s.phone) : '<span style="color:var(--muted)">No phone</span>'}</td>
         <td><span class="badge ${st[1]}">${st[0]}</span><div class="payline">${esc(s.payment)}</div></td>
@@ -932,6 +951,10 @@
   // Only the name/phone change what is being created. Changing them means a different student.
   ['n-name', 'n-phone'].forEach(id => $(id).addEventListener('input', () => ridDone('newStudent')));
   ['x-item', 'x-amount', 'x-date'].forEach(id => $(id).addEventListener('input', () => ridDone('expense')));
+  function copyStudentLogin(id) {
+    const st = STUDENTS.find(x => x.id === id); if (!st) return;
+    copyCreds(st.id, st.password || '(ask the admin)');
+  }
   function copyCreds(id, pass) {
     const text = `English Land Academy\nWebsite: englishlandacademy.info\nID: ${id}\nPassword: ${pass}`;
     (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => toast('Login details copied.'), () => toast('Copy did not work. Select the details and copy them by hand.'));
